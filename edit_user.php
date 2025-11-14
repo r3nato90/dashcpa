@@ -1,98 +1,145 @@
 <?php
 session_start();
 include('config/db.php');
-date_default_timezone_set('America/Sao_Paulo');
+date_default_timezone_set('America/Sao_Paulo'); 
+include('config/logger.php');
 
-// Apenas Gerentes (todos os níveis) podem ver
+$page_title = "Editar Operador";
+$breadcrumb_active = "Editar Operador";
+
+// Verificação de segurança: Apenas Super Admin, Admin e Sub-Admin podem acessar
 if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['super_adm', 'admin', 'sub_adm'])) {
     header('Location: login.php');
     exit;
 }
-$role = $_SESSION['role'];
-$id_logado = $_SESSION['id'];
+$role_logado = $_SESSION['role'];
+$id_logado = $_SESSION['user_id'];
+$id_usuario_edit = $_GET['id'] ?? null;
+$message = "";
 
-if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
+if (!$id_usuario_edit) {
     header('Location: manage_users.php');
     exit;
 }
-$id_usuario = (int)$_GET['id'];
 
-// Lógica de segurança (só carrega se for Super Admin ou o dono do usuário)
-$query_user = "SELECT * FROM usuarios WHERE id_usuario = ?";
-$params_user = [$id_usuario];
-if ($role == 'admin' || $role == 'sub_adm') {
-    $query_user .= " AND id_sub_adm = ?";
-    $params_user[] = $id_logado;
-}
-$stmt_user = $pdo->prepare($query_user);
-$stmt_user->execute($params_user);
-$user = $stmt_user->fetch();
-if (!$user) {
-    header('Location: manage_users.php?status=error_permission');
+// 1. Buscar dados do usuário a ser editado
+$stmt_user = $pdo->prepare("SELECT * FROM usuarios WHERE id = ? AND role = 'usuario'");
+$stmt_user->execute([$id_usuario_edit]);
+$usuario = $stmt_user->fetch(PDO::FETCH_ASSOC);
+
+if (!$usuario) {
+    $message = "<div class='alert alert-danger'>Operador não encontrado.</div>";
+    include('header.php'); 
+    echo "<div class='container mt-5'>{$message} <p><a href='manage_users.php'>Voltar ao Gerenciamento de Operadores</a></p></div>";
+    include('footer.php');
     exit;
 }
 
-// Carrega lista de admins (apenas para Super Admin)
-$admins_list = [];
-if ($role == 'super_adm') {
-    $stmt_admins = $pdo->query("SELECT id_sub_adm, nome, role FROM sub_administradores ORDER BY nome");
-    $admins_list = $stmt_admins->fetchAll();
+// 2. Verificação de permissão: O usuário logado deve ser o manager do operador (ou Super Admin)
+if ($role_logado != 'super_adm' && $usuario['manager_id'] != $id_logado) {
+    log_acao("Acesso não autorizado: Tentativa de editar usuário ID " . $id_usuario_edit . " pelo usuário ID " . $id_logado);
+    $message = "<div class='alert alert-danger'>Acesso negado. Você só pode editar operadores sob sua gerência.</div>";
+    include('header.php'); 
+    echo "<div class='container mt-5'>{$message} <p><a href='manage_users.php'>Voltar ao Gerenciamento de Operadores</a></p></div>";
+    include('footer.php');
+    exit;
 }
-include('templates/header.php');
+
+
+// 3. Obter lista de Managers (para Super Admin, Admin e Sub-Admin)
+$managers = [];
+$manager_id_atual = $usuario['manager_id'];
+
+if ($role_logado === 'super_adm') {
+    // Super Adm pode atribuir a qualquer Admin ou Sub-Admin
+    $stmt_managers = $pdo->query("SELECT id, nome, role FROM sub_administradores WHERE role IN ('admin', 'sub_adm') ORDER BY nome");
+    $managers = $stmt_managers->fetchAll();
+} elseif ($role_logado === 'admin' || $role_logado === 'sub_adm') {
+    // Admin/Sub-Admin só podem atribuir a si mesmos (ou manter o atual se for o caso)
+    $managers[] = ['id' => $id_logado, 'nome' => $_SESSION['username'], 'role' => $role_logado];
+    // Se o manager atual for diferente (o que só deveria acontecer se o super admin definiu), mantemos a opção atual também
+    if ($manager_id_atual != $id_logado) {
+        $stmt_current_manager = $pdo->prepare("SELECT id, nome, role FROM sub_administradores WHERE id = ?");
+        $stmt_current_manager->execute([$manager_id_atual]);
+        $current_manager = $stmt_current_manager->fetch(PDO::FETCH_ASSOC);
+        if ($current_manager) {
+             // Adiciona o manager atual para que ele não seja perdido
+            if (!in_array($current_manager, $managers)) {
+                $managers[] = $current_manager;
+            }
+        }
+    }
+}
+
+include('header.php'); 
 ?>
 
-<div class="container mt-5">
-    <div class="row justify-content-center">
-        <div class="col-md-7">
-            <div class="card shadow-lg">
-                <div class="card-header bg-primary text-white">
-                    <h4>Editar Usuário: <?php echo htmlspecialchars($user['nome']); ?></h4>
-                </div>
-                <div class="card-body">
-                    <form action="process_edit_user.php" method="POST">
-                        <input type="hidden" name="id_usuario" value="<?php echo $user['id_usuario']; ?>">
+<h2 class="mb-4">Editar Operador: <?php echo htmlspecialchars($usuario['nome']); ?></h2>
 
-                        <div class="mb-3">
-                            <label for="nome" class="form-label">Nome</label>
-                            <input type="text" class="form-control" name="nome" value="<?php echo htmlspecialchars($user['nome']); ?>" required>
-                        </div>
-                        <div class="mb-3">
-                            <label for="email" class="form-label">Email</label>
-                            <input type="email" class="form-control" name="email" value="<?php echo htmlspecialchars($user['email']); ?>" required>
-                        </div>
-                         <div class="mb-3">
-                            <label for="senha" class="form-label">Nova Senha (Deixe em branco para não alterar)</label>
-                            <input type="password" class="form-control" name="senha">
-                        </div>
-                        <div class="mb-3">
-                            <label for="percentual_comissao" class="form-label">Percentual de Comissão (%)</label>
-                            <input type="number" step="0.01" class="form-control" name="percentual_comissao" value="<?php echo $user['percentual_comissao']; ?>" required>
-                        </div>
-                        
-                        <?php if ($role == 'super_adm'): ?>
-                        <div class="mb-3">
-                            <label for="id_sub_adm" class="form-label">Vincular a (Gerente)</label>
-                            <select class="form-control" name="id_sub_adm">
-                                <option value="">Nenhum (Sem vínculo)</option>
-                                <?php foreach ($admins_list as $admin): ?>
-                                    <option value="<?php echo $admin['id_sub_adm']; ?>" <?php echo ($admin['id_sub_adm'] == $user['id_sub_adm']) ? 'selected' : ''; ?>>
-                                        <?php echo htmlspecialchars($admin['nome']) . " (" . $admin['role'] . ")"; ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <?php endif; ?>
-                        
-                        <button type="submit" class="btn btn-success w-100">Salvar Alterações</button>
-                    </form>
-                    
-                    <hr>
-                    <a href="delete_user.php?id=<?php echo $user['id_usuario']; ?>" class="btn btn-danger w-100" onclick="return confirm('Tem certeza que deseja APAGAR este usuário? Esta ação não pode ser desfeita e irá desvincular todos os relatórios dele.');">
-                        Apagar Usuário Permanentemente
-                    </a>
+<div class="card shadow-sm">
+    <div class="card-body">
+        <form method="POST" action="process_edit_user.php">
+            <input type="hidden" name="id_usuario" value="<?php echo htmlspecialchars($id_usuario_edit); ?>">
+
+            <!-- Campo Nome -->
+            <div class="mb-3">
+                <label for="nome" class="form-label">Nome Completo</label>
+                <input type="text" class="form-control" id="nome" name="nome" value="<?php echo htmlspecialchars($usuario['nome']); ?>" required>
+            </div>
+            
+            <!-- Campo Email -->
+            <div class="mb-3">
+                <label for="email" class="form-label">Email</label>
+                <input type="email" class="form-control" id="email" name="email" value="<?php echo htmlspecialchars($usuario['email']); ?>" required>
+            </div>
+            
+            <!-- Campo Comissão -->
+            <div class="mb-3">
+                <label for="percentual_comissao" class="form-label">Comissão (%)</label>
+                <input type="number" step="0.01" class="form-control" id="percentual_comissao" name="percentual_comissao" 
+                       value="<?php echo htmlspecialchars($usuario['percentual_comissao']); ?>" required min="0" max="100">
+            </div>
+
+            <!-- Campo Manager (Gerente) - Visível apenas se houver opções -->
+            <?php if (!empty($managers)): ?>
+            <div class="mb-3">
+                <label for="manager_id" class="form-label">Administrador Gerente</label>
+                <select class="form-select" id="manager_id" name="manager_id" required>
+                    <option value="">Selecione um Administrador</option>
+                    <?php foreach ($managers as $manager): ?>
+                        <option value="<?php echo $manager['id']; ?>" 
+                                <?php echo ($manager_id_atual == $manager['id']) ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($manager['nome'] . ' (' . $manager['role'] . ')'); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <?php endif; ?>
+
+            <!-- Reset Senha (Opcional) -->
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label for="new_password" class="form-label">Nova Senha (Deixe em branco para não alterar)</label>
+                    <input type="password" class="form-control" id="new_password" name="new_password">
+                </div>
+                <div class="col-md-6 mb-4">
+                    <label for="confirm_password" class="form-label">Confirmar Nova Senha</label>
+                    <input type="password" class="form-control" id="confirm_password" name="confirm_password">
                 </div>
             </div>
-        </div>
+
+            <div class="d-flex justify-content-between">
+                <a href="manage_users.php" class="btn btn-secondary">
+                    <i class="fas fa-arrow-left me-1"></i> Voltar
+                </a>
+                <button type="submit" class="btn btn-warning">
+                    <i class="fas fa-edit me-1"></i> Salvar Alterações
+                </button>
+            </div>
+        </form>
     </div>
 </div>
-<?php include('templates/footer.php'); ?>
+
+<?php 
+include('footer.php');
+?>

@@ -1,56 +1,52 @@
 <?php
-session_start();
-include('config/db.php');
-date_default_timezone_set('America/Sao_Paulo');
-
-// Apenas Gerentes podem ver esta página
-if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['super_adm', 'admin', 'sub_adm'])) {
-    header('Location: login.php');
-    exit;
-}
-
-// Verifica se os detalhes do novo usuário estão na sessão
-if (!isset($_SESSION['new_user_details'])) {
-    header('Location: manage_users.php');
-    exit;
-}
-
-// Pega os detalhes e limpa da sessão
-$details = $_SESSION['new_user_details'];
-unset($_SESSION['new_user_details']);
-
-include('templates/header.php');
+$page_title = "Registro Concluído";
+$nome = htmlspecialchars($_GET['name'] ?? 'Usuário');
 ?>
-
-<div class="container mt-5">
-    <div class="row justify-content-center">
-        <div class="col-md-7">
-            <div class="card shadow-lg text-center">
-                <div class="card-header bg-success text-white">
-                    <h4>Conta Criada com Sucesso!</h4>
-                </div>
-                <div class="card-body">
-                    <p>A conta para <strong><?php echo htmlspecialchars($details['nome']); ?></strong> foi criada.</p>
-                    <p>Anote os dados de login e informe ao novo usuário, pois esta senha não poderá ser recuperada (apenas redefinida).</p>
-                    
-                    <div class="alert alert-warning">
-                        <h5 class="alert-heading">Dados de Acesso:</h5>
-                        <hr>
-                        <p class="mb-0"><strong>Email:</strong> <?php echo htmlspecialchars($details['email']); ?></p>
-                        
-                        <?php if (isset($details['username'])): ?>
-                            <p class="mb-0"><strong>Username:</strong> <?php echo htmlspecialchars($details['username']); ?></p>
-                        <?php endif; ?>
-
-                        <p class="mb-0"><strong>Senha Gerada:</strong> <?php echo htmlspecialchars($details['senha']); ?></p>
-                    </div>
-
-                    <a href="manage_users.php" class="btn btn-primary mt-3">Ver Gerenciamento</a>
-                    <a href="create_user.php" class="btn btn-success mt-3">Criar Outra Conta</a>
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DashCPA - Registro Concluído</title>
+    <!-- Incluindo Bootstrap CSS (CDN) -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous">
+    <!-- Incluindo Font Awesome (Ícones) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        .success-container {
+            margin-top: 100px;
+            padding: 40px;
+            background-color: #fff;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .success-icon {
+            color: #28a745;
+            font-size: 60px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-md-7 col-lg-6">
+                <div class="success-container">
+                    <i class="fas fa-check-circle success-icon"></i>
+                    <h1 class="mb-3">Registro Concluído!</h1>
+                    <p class="lead">Parabéns, <?php echo $nome; ?>! Sua conta foi criada com sucesso.</p>
+                    <p class="mb-4">Você agora pode fazer login para acessar o sistema.</p>
+                    <a href="login.php" class="btn btn-primary btn-lg">Fazer Login</a>
                 </div>
             </div>
         </div>
     </div>
-</div>
-
-<?php include('templates/footer.php'); ?>
+    
+    <!-- Incluindo Bootstrap JS (CDN) e dependências -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+</body>
+</html>

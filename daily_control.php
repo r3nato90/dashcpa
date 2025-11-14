@@ -4,202 +4,257 @@ include('config/db.php');
 date_default_timezone_set('America/Sao_Paulo'); 
 include('config/logger.php');
 
-// Apenas Gerentes (Super e Sub) podem ver
+$page_title = "Controle de Despesas Diárias";
+$breadcrumb_active = "Controle Diário";
+
+// Verificação de segurança: Apenas Gerentes (Super e Sub) podem acessar
 if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['super_adm', 'admin', 'sub_adm'])) {
     header('Location: login.php');
     exit;
 }
-$role = $_SESSION['role'];
-$id_admin_logado = $_SESSION['id'];
+$id_admin_logado = $_SESSION['user_id'];
+$message = "";
 
-// --- LÓGICA DE NAVEGAÇÃO DE DATA ---
-$data_selecionada = date('Y-m-d'); // Padrão é hoje
-if (isset($_GET['data'])) {
-    $data_selecionada = $_GET['data'];
+// --- Lógica para buscar despesas ---
+$date_selected = $_GET['date'] ?? date('Y-m-d');
+
+// Buscar despesas do dia selecionado para o admin logado
+$stmt_expenses = $pdo->prepare("SELECT * FROM despesas_diarias WHERE id_admin_logado = ? AND data = ?");
+$stmt_expenses->execute([$id_admin_logado, $date_selected]);
+$current_expenses = $stmt_expenses->fetch(PDO::FETCH_ASSOC);
+
+$gastos_proxy_value = $current_expenses ? number_format($current_expenses['gastos_proxy'], 2, ',', '.') : '0,00';
+$gastos_numeros_value = $current_expenses ? number_format($current_expenses['gastos_numeros'], 2, ',', '.') : '0,00';
+
+// --- Lógica para buscar histórico de despesas (últimos 30 dias) ---
+$date_30_days_ago = date('Y-m-d', strtotime('-30 days'));
+$query_history = "
+    SELECT 
+        data, 
+        (gastos_proxy + gastos_numeros) AS total_gasto
+    FROM despesas_diarias
+    WHERE id_admin_logado = ? AND data >= ?
+    ORDER BY data ASC
+";
+$stmt_history = $pdo->prepare($query_history);
+$stmt_history->execute([$id_admin_logado, $date_30_days_ago]);
+$history_data = $stmt_history->fetchAll(PDO::FETCH_ASSOC);
+
+$history_labels = [];
+$history_data_values = [];
+$total_gastos_30d = 0;
+
+// Preenche os dados para o gráfico
+foreach ($history_data as $d) {
+    $history_labels[] = date('d/m', strtotime($d['data']));
+    $history_data_values[] = (float)$d['total_gasto'];
+    $total_gastos_30d += (float)$d['total_gasto'];
 }
-$data_anterior = date('Y-m-d', strtotime($data_selecionada . ' -1 day'));
-$data_seguinte = date('Y-m-d', strtotime($data_selecionada . ' +1 day'));
-$data_formatada = strftime('%d de %B de %Y', strtotime($data_selecionada));
-$e_hoje = ($data_selecionada == date('Y-m-d'));
+$history_labels_json = json_encode($history_labels);
+$history_data_values_json = json_encode($history_data_values);
 
 
-// --- BUSCAR DADOS DOS RELATÓRIOS PARA ESTA DATA ---
-$report_totals = [
-    'total_deposito' => 0,
-    'total_saque_bau' => 0,
-    'total_lucro' => 0,
-    'total_comissao_admin' => 0,
-    'total_comissao_gerente' => 0,
-    'total_comissao_operador' => 0
-];
-$params_reports = [];
-
-if ($role == 'super_adm') {
-    // Super Admin vê o total de TUDO
-    $query_reports = "
-        SELECT 
-            SUM(valor_deposito) as total_deposito, 
-            SUM(valor_saque + valor_bau) as total_saque_bau,
-            SUM(lucro_diario) as total_lucro,
-            SUM(comissao_admin) as total_comissao_admin,
-            SUM(comissao_sub_adm) as total_comissao_gerente,
-            SUM(comissao_usuario) as total_comissao_operador
-        FROM relatorios 
-        WHERE DATE(data) = ?
-    ";
-    $params_reports = [$data_selecionada];
-} else {
-    // Admin/Sub-Admin vê o total APENAS dos seus usuários
-    $query_reports = "
-        SELECT 
-            SUM(r.valor_deposito) as total_deposito, 
-            SUM(r.valor_saque + r.valor_bau) as total_saque_bau,
-            SUM(r.lucro_diario) as total_lucro,
-            SUM(r.comissao_admin) as total_comissao_admin,
-            SUM(r.comissao_sub_adm) as total_comissao_gerente,
-            SUM(r.comissao_usuario) as total_comissao_operador
-        FROM relatorios r
-        JOIN usuarios u ON r.id_usuario = u.id_usuario
-        WHERE u.id_sub_adm = ? AND DATE(r.data) = ?
-    ";
-    $params_reports = [$id_admin_logado, $data_selecionada];
-}
-
-$stmt_reports = $pdo->prepare($query_reports);
-$stmt_reports->execute($params_reports);
-$fetched_totals = $stmt_reports->fetch(PDO::FETCH_ASSOC);
-if ($fetched_totals) {
-    // Mistura os resultados com os padrões para evitar erro de null
-    $report_totals = array_merge($report_totals, array_filter($fetched_totals));
-}
-
-
-// --- BUSCAR DADOS DE DESPESAS PARA ESTA DATA ---
-// (Apenas despesas do admin logado)
-$stmt_despesas = $pdo->prepare("SELECT gastos_proxy, gastos_numeros FROM despesas_diarias WHERE id_admin_logado = ? AND data = ?");
-$stmt_despesas->execute([$id_admin_logado, $data_selecionada]);
-$despesas = $stmt_despesas->fetch(PDO::FETCH_ASSOC);
-
-$gastos_proxy = $despesas['gastos_proxy'] ?? 0;
-$gastos_numeros = $despesas['gastos_numeros'] ?? 0;
-
-include('templates/header.php'); 
+include('header.php'); 
 ?>
 
-<div class="container-fluid">
+<h2 class="mb-4">Controle Diário de Gastos Operacionais</h2>
 
-    <!-- Cabeçalho -->
-    <div class="mb-8 flex items-center justify-between">
-        <div>
-            <h1 class="text-4xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent mb-2">Controle Diário</h1>
-            <p class="text-muted-foreground">Gerencie suas operações diárias - Salvamento automático ativo</p>
-        </div>
-        <a href="dashboard_superadmin.php" class="btn btn-success btn-lg"> <!-- Modificado: Link "Novo Registro" removido pois o dia é controlado pela data -->
-             <i class="fas fa-arrow-left me-2"></i> Voltar ao Dashboard
-        </a>
+<p class="text-muted">Registre os gastos operacionais (Proxy e Números) para a sua gerência. Os dados são salvos por dia e por gerente.</p>
+
+<?php echo $message; // Exibe feedback de status (se houver) ?>
+
+<!-- Card de Seleção de Data e Acesso -->
+<div class="card shadow-sm mb-4">
+    <div class="card-body">
+        <form id="dateSelectForm" method="GET" action="daily_control.php">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-4">
+                    <label for="date_picker" class="form-label">Selecionar Data</label>
+                    <input type="date" class="form-control" id="date_picker" name="date" 
+                           value="<?php echo htmlspecialchars($date_selected); ?>" required 
+                           max="<?php echo date('Y-m-d'); ?>">
+                </div>
+                <div class="col-md-4">
+                    <button type="submit" class="btn btn-info w-100">
+                        <i class="fas fa-search me-2"></i> Carregar Despesas
+                    </button>
+                </div>
+                <div class="col-md-4 text-end">
+                    <h5 class="mb-0 text-muted">
+                        Despesas para: **<?php echo date('d/m/Y', strtotime($date_selected)); ?>**
+                    </h5>
+                </div>
+            </div>
+        </form>
     </div>
-
-    <div class="row g-4">
-        
-        <!-- Coluna da Data -->
-        <div class="col-lg-3">
-            <div class="card shadow-sm h-100">
-                <div class="card-header">
-                    <h5 class="mb-0">Data Selecionada</h5>
-                </div>
-                <div class="card-body d-flex flex-column">
-                    <div class="d-flex justify-content-between align-items-center mb-3">
-                        <a href="?data=<?php echo $data_anterior; ?>" class="btn btn-outline-secondary" id="btn-dia-anterior">&lsaquo;</a>
-                        <span class="font-bold text-lg" id="data-formatada"><?php echo $data_formatada; ?></span>
-                        <a href="?data=<?php echo $data_seguinte; ?>" class="btn btn-outline-secondary" id="btn-dia-seguinte">&rsaquo;</a>
-                    </div>
-                    <?php if (!$e_hoje): ?>
-                    <a href="daily_control.php" class="btn btn-primary w-100 mb-3">Ir para Hoje</a>
-                    <?php endif; ?>
-                    
-                    <div class="mt-auto text-muted-foreground text-sm">
-                         <hr style="border-top-color: hsl(var(--border));">
-                        <p class="mb-1"><i class="fas fa-check-circle text-success me-2"></i>Salvamento automático ativo.</p>
-                        <p class="mb-1"><i class="fas fa-keyboard me-2"></i>Use as setas (← e →) para navegar.</p>
-                        <p class="mb-0"><i class="fas fa-info-circle me-2"></i>Alterações são salvas ao sair do campo.</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Coluna de Totais do Dia -->
-        <div class="col-lg-9">
-            <div class="card shadow-sm h-100">
-                <div class="card-header">
-                    <h5 class="mb-0">Relatório do Dia (<?php echo $role == 'super_adm' ? 'Total' : 'Sua Equipe'; ?>)</h5>
-                </div>
-                <div class="card-body">
-                    <!-- Grid de 6 cards para os totais -->
-                    <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                        
-                        <!-- Total Investido -->
-                        <div class="rounded-lg border bg-card text-card-foreground shadow-sm border-l-4 border-l-blue-500">
-                            <div class="p-4 flex flex-row items-center justify-between space-y-0 pb-2">
-                                <h3 class="tracking-tight text-sm font-medium">Total Investido (Depósito)</h3>
-                                <i class="fas fa-dollar-sign h-4 w-4 text-blue-600"></i>
-                            </div>
-                            <div class="p-4 pt-0"><div class="text-2xl font-bold text-blue-600">R$ <?php echo number_format($report_totals['total_deposito'], 2, ',', '.'); ?></div></div>
-                        </div>
-
-                        <!-- Total Saque + Baú -->
-                        <div class="rounded-lg border bg-card text-card-foreground shadow-sm border-l-4 border-l-purple-500">
-                            <div class="p-4 flex flex-row items-center justify-between space-y-0 pb-2">
-                                <h3 class="tracking-tight text-sm font-medium">Total Saque + Baú</h3>
-                                <i class="fas fa-piggy-bank h-4 w-4 text-purple-600"></i>
-                            </div>
-                            <div class="p-4 pt-0"><div class="text-2xl font-bold text-purple-600">R$ <?php echo number_format($report_totals['total_saque_bau'], 2, ',', '.'); ?></div></div>
-                        </div>
-
-                        <!-- Lucro Total (Bruto) -->
-                        <div class="rounded-lg border bg-card text-card-foreground shadow-sm border-l-4 border-l-green-500">
-                            <div class="p-4 flex flex-row items-center justify-between space-y-0 pb-2">
-                                <h3 class="tracking-tight text-sm font-medium">Lucro Total (Bruto)</h3>
-                                <i class="fas fa-chart-line h-4 w-4 text-green-600"></i>
-                            </div>
-                            <div class="p-4 pt-0"><div class="text-2xl font-bold text-green-600">R$ <?php echo number_format($report_totals['total_lucro'], 2, ',', '.'); ?></div></div>
-                        </div>
-
-                        <!-- Comissão Admin (50%) -->
-                        <div class="rounded-lg border bg-card text-card-foreground shadow-sm border-l-4 border-l-orange-500">
-                            <div class="p-4 flex flex-row items-center justify-between space-y-0 pb-2">
-                                <h3 class="tracking-tight text-sm font-medium">Comissão Admin</h3>
-                                <i class="fas fa-crown h-4 w-4 text-orange-600"></i>
-                            </div>
-                            <div class="p-4 pt-0"><div class="text-2xl font-bold text-orange-600">R$ <?php echo number_format($report_totals['total_comissao_admin'], 2, ',', '.'); ?></div></div>
-                        </div>
-
-                        <!-- Comissão Gerentes (10%) -->
-                        <div class="rounded-lg border bg-card text-card-foreground shadow-sm border-l-4 border-l-yellow-500" style="border-left-color: #eab308;">
-                            <div class="p-4 flex flex-row items-center justify-between space-y-0 pb-2">
-                                <h3 class="tracking-tight text-sm font-medium">Comissão Gerentes</h3>
-                                <i class="fas fa-user-tie h-4 w-4 text-yellow-500" style="color: #eab308;"></i>
-                            </div>
-                            <div class="p-4 pt-0"><div class="text-2xl font-bold" style="color: #eab308;">R$ <?php echo number_format($report_totals['total_comissao_gerente'], 2, ',', '.'); ?></div></div>
-                        </div>
-
-                        <!-- Comissão Operadores (40%) -->
-                        <div class="rounded-lg border bg-card text-card-foreground shadow-sm border-l-4 border-l-red-500">
-                            <div class="p-4 flex flex-row items-center justify-between space-y-0 pb-2">
-                                <h3 class="tracking-tight text-sm font-medium">Comissão Operadores</h3>
-                                <i class="fas fa-users h-4 w-4 text-red-600"></i>
-                            </div>
-                            <div class="p-4 pt-0"><div class="text-2xl font-bold text-red-600">R$ <?php echo number_format($report_totals['total_comissao_operador'], 2, ',', '.'); ?></div></div>
-                        </div>
-
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div> <!-- Fim da Row dos Totais -->
-
-    <!-- Despesas Operacionais -->
-    
-
 </div>
 
-<?php include('templates/footer.php'); ?>
+<!-- Card de Formulário de Despesas -->
+<div class="row">
+    <div class="col-lg-6 mb-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header bg-warning text-dark">
+                <h5 class="mb-0">Registro de Gastos (R$)</h5>
+            </div>
+            <div class="card-body">
+                <form id="expensesForm">
+                    <input type="hidden" name="data" value="<?php echo htmlspecialchars($date_selected); ?>">
+                    
+                    <div class="mb-3">
+                        <label for="gastos_proxy" class="form-label">Gastos com Proxy (R$)</label>
+                        <div class="input-group">
+                            <span class="input-group-text">R$</span>
+                            <input type="text" class="form-control currency-mask" id="gastos_proxy" name="gastos_proxy" 
+                                   value="<?php echo $gastos_proxy_value; ?>" required>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <label for="gastos_numeros" class="form-label">Gastos com Números/Outros (R$)</label>
+                        <div class="input-group">
+                            <span class="input-group-text">R$</span>
+                            <input type="text" class="form-control currency-mask" id="gastos_numeros" name="gastos_numeros" 
+                                   value="<?php echo $gastos_numeros_value; ?>" required>
+                        </div>
+                    </div>
+                    
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-warning btn-lg">
+                            <i class="fas fa-upload me-2"></i> Salvar Despesas
+                        </button>
+                    </div>
+                    <div id="saveFeedback" class="mt-3 text-center"></div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Card de Histórico e Total -->
+    <div class="col-lg-6 mb-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header bg-secondary text-white">
+                <h5 class="mb-0">Histórico da Gerência (Últimos 30 dias)</h5>
+            </div>
+            <div class="card-body">
+                <h4 class="mb-3">Total Gasto (30D): <span class="text-danger">R$ <?php echo number_format($total_gastos_30d, 2, ',', '.'); ?></span></h4>
+                <div style="height: 250px;">
+                    <canvas id="expensesHistoryChart"></canvas>
+                </div>
+                <p class="mt-3 text-muted text-center"><small>Representação dos gastos totais por dia.</small></p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Usa a biblioteca jQuery Mask Plugin (já deve estar carregada via footer.php)
+    $(document).ready(function(){
+        // Aplica a máscara de moeda
+        $('.currency-mask').mask('0#.#00,00', {reverse: true});
+
+        // Gráfico de Histórico
+        const ctxHistory = document.getElementById('expensesHistoryChart');
+        if (ctxHistory) {
+            new Chart(ctxHistory, {
+                type: 'bar',
+                data: {
+                    labels: <?php echo $history_labels_json; ?>,
+                    datasets: [{
+                        label: 'Gasto Total Diário',
+                        data: <?php echo $history_data_values_json; ?>,
+                        backgroundColor: 'rgba(220, 53, 69, 0.8)', 
+                        borderColor: 'rgba(220, 53, 69, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Valor (R$)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                         tooltip: {
+                             callbacks: {
+                                label: function(context) {
+                                    let label = context.dataset.label || '';
+                                    if (label) {
+                                        label += ': ';
+                                    }
+                                    if (context.parsed.y !== null) {
+                                        label += 'R$ ' + context.parsed.y.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+                                    }
+                                    return label;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Processamento da Submissão do Formulário AJAX
+        $('#expensesForm').on('submit', function(e) {
+            e.preventDefault();
+            
+            const form = $(this);
+            const feedbackDiv = $('#saveFeedback');
+            const dataToSave = {};
+
+            // Pega o valor formatado, remove máscara e converte para float
+            function getUnmaskedValue(id) {
+                const valueStr = $('#' + id).val() || '0,00';
+                return parseFloat(valueStr.replace(/\./g, '').replace(',', '.'));
+            }
+
+            dataToSave.data = form.find('input[name="data"]').val();
+            dataToSave.gastos_proxy = getUnmaskedValue('gastos_proxy');
+            dataToSave.gastos_numeros = getUnmaskedValue('gastos_numeros');
+            
+            if (dataToSave.gastos_proxy < 0 || dataToSave.gastos_numeros < 0) {
+                 feedbackDiv.html('<div class="alert alert-danger">Os valores não podem ser negativos.</div>');
+                 return;
+            }
+
+            feedbackDiv.html('<div class="text-center text-warning"><i class="fas fa-spinner fa-spin me-2"></i> Salvando...</div>');
+
+            $.ajax({
+                url: 'save_daily_expenses.php',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify(dataToSave),
+                success: function(response) {
+                    if (response.status === 'success') {
+                        feedbackDiv.html('<div class="alert alert-success">' + response.message + '</div>');
+                        // Recarrega a página para atualizar o gráfico/histórico (ou apenas o gráfico via AJAX se for mais complexo)
+                        setTimeout(function() {
+                            window.location.href = 'daily_control.php?date=' + dataToSave.data + '&status=saved';
+                        }, 1000);
+                    } else {
+                        feedbackDiv.html('<div class="alert alert-danger">Erro: ' + (response.message || 'Falha ao salvar.') + '</div>');
+                    }
+                },
+                error: function(xhr, status, error) {
+                    feedbackDiv.html('<div class="alert alert-danger">Erro de comunicação com o servidor. Tente novamente.</div>');
+                    console.error("AJAX Error:", status, error);
+                }
+            });
+        });
+        
+    });
+</script>
+
+<?php 
+// Inclui o save_daily_expenses.php se houver um status de sucesso
+if (isset($_GET['status']) && $_GET['status'] == 'saved') {
+    $message = "<div class='alert alert-success mt-3'>Despesas salvas/atualizadas com sucesso para " . date('d/m/Y', strtotime($date_selected)) . "!</div>";
+}
+include('footer.php');
+?>

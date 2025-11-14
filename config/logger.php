@@ -1,54 +1,38 @@
 <?php
-// Certifique-se que o fuso horário está definido
-date_default_timezone_set('America/Sao_Paulo');
+// Certifique-se de que a conexão com o banco de dados ($pdo) foi incluída antes de chamar este arquivo.
 
 /**
- * Registra uma ação no banco de dados.
+ * Registra uma ação no sistema de logs.
  *
- * @param PDO $pdo Instância da conexão PDO.
- * @param string $acao_tipo Tipo da ação (ex: 'LOGIN_FAIL', 'USER_CREATE', 'ERROR').
- * @param string $descricao Descrição detalhada da ação.
+ * @param string $acao A descrição da ação realizada.
  */
-function log_action($pdo, $acao_tipo, $descricao) {
+function log_acao($acao) {
+    global $pdo; // Usa a conexão PDO global
+    
+    // Pega o ID e o papel do usuário logado, se houver
+    $user_id = isset($_SESSION['user_id']) ? $_SESSION['user_id'] : null;
+    $user_role = isset($_SESSION['role']) ? $_SESSION['role'] : 'visitante';
+    $timestamp = date('Y-m-d H:i:s');
+    $ip_address = $_SERVER['REMOTE_ADDR'];
+    $user_agent = $_SERVER['HTTP_USER_AGENT'];
+
+    // Prepara e executa a inserção no banco de dados
+    $sql = "INSERT INTO logs (timestamp, user_id, user_role, ip_address, user_agent, acao) 
+            VALUES (?, ?, ?, ?, ?, ?)";
+    
     try {
-        // Tenta iniciar a sessão se ela não existir (para pegar dados do usuário)
-        if (session_status() == PHP_SESSION_NONE) {
-            session_start();
-        }
-
-        $id_usuario = null;
-        $nome_usuario = 'Sistema'; // Default
-        $role_usuario = 'SYSTEM'; // Default
-
-        // Verifica se o usuário está logado e pega seus dados
-        if (isset($_SESSION['id']) && isset($_SESSION['role'])) {
-            $id_usuario = $_SESSION['id'];
-            $role_usuario = $_SESSION['role'];
-
-            // Busca o nome do usuário (de tabelas diferentes dependendo da role)
-            if (in_array($role_usuario, ['super_adm', 'admin', 'sub_adm'])) {
-                $stmt_nome = $pdo->prepare("SELECT nome FROM sub_administradores WHERE id_sub_adm = ?");
-            } else {
-                $stmt_nome = $pdo->prepare("SELECT nome FROM usuarios WHERE id_usuario = ?");
-            }
-            $stmt_nome->execute([$id_usuario]);
-            $user_nome = $stmt_nome->fetch();
-            
-            if ($user_nome) {
-                $nome_usuario = $user_nome['nome'];
-            }
-        }
-
-        // Insere o log
-        $stmt_log = $pdo->prepare("
-            INSERT INTO logs (id_usuario_acao, nome_usuario_acao, role_usuario_acao, acao_tipo, descricao)
-            VALUES (?, ?, ?, ?, ?)
-        ");
-        $stmt_log->execute([$id_usuario, $nome_usuario, $role_usuario, $acao_tipo, $descricao]);
-
-    } catch (Exception $e) {
-        // Se o logger falhar, não quebre a aplicação.
-        // error_log("Falha ao registrar log: " . $e->getMessage());
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            $timestamp,
+            $user_id,
+            $user_role,
+            $ip_address,
+            $user_agent,
+            $acao
+        ]);
+    } catch (\PDOException $e) {
+        // Em caso de erro ao registrar o log, imprime uma mensagem de erro
+        error_log("ERRO AO REGISTRAR LOG: " . $e->getMessage());
     }
 }
 ?>

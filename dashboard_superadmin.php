@@ -1,8 +1,10 @@
 <?php
 session_start();
 include('config/db.php');
-date_default_timezone_set('America/Sao_Paulo'); // Define o Fuso Horário
-include('config/logger.php'); // Inclui o sistema de Log
+date_default_timezone_set('America/Sao_Paulo'); 
+include('config/logger.php');
+
+$page_title = "Dashboard (Super Admin)";
 
 // Verificação de segurança
 if (!isset($_SESSION['role']) || $_SESSION['role'] != 'super_adm') {
@@ -21,303 +23,334 @@ if (isset($_GET['status'])) {
 }
 
 // --- QUERIES PARA OS CARDS DE ESTATÍSTICAS (KPIs) ---
-$stmt_total_users = $pdo->query("SELECT COUNT(*) FROM usuarios");
+$stmt_total_users = $pdo->query("SELECT COUNT(*) FROM usuarios WHERE role = 'usuario'");
 $total_users = $stmt_total_users->fetchColumn();
+
+// Conta admins e sub_admins como managers
 $stmt_total_managers = $pdo->query("SELECT COUNT(*) FROM sub_administradores WHERE role IN ('admin', 'sub_adm')");
 $total_managers = $stmt_total_managers->fetchColumn();
-$stmt_total_lucro = $pdo->query("SELECT SUM(lucro_diario) FROM relatorios");
-$total_lucro = $stmt_total_lucro->fetchColumn() ?? 0;
+
+// Lucro bruto total
+$stmt_total_lucro_bruto = $pdo->query("SELECT SUM(lucro_diario) FROM relatorios");
+$total_lucro_bruto = $stmt_total_lucro_bruto->fetchColumn() ?? 0;
+
+// Lucro líquido do sistema (Super Admin) - Campo comissao_admin
+$stmt_lucro_liquido_sistema = $pdo->query("SELECT SUM(comissao_admin) FROM relatorios");
+$lucro_liquido_sistema = $stmt_lucro_liquido_sistema->fetchColumn() ?? 0;
+
+// Total de comissão dos gerentes (Admin + Sub-Admin) - Campo comissao_sub_adm
 $stmt_total_comissao_gerentes = $pdo->query("SELECT SUM(comissao_sub_adm) FROM relatorios");
 $total_comissao_gerentes = $stmt_total_comissao_gerentes->fetchColumn() ?? 0;
 
-// --- NOVAS QUERIES PARA OS GRÁFICOS ---
+// Total de comissão dos usuários (Operadores) - Campo comissao_usuario
+$stmt_total_comissao_usuarios = $pdo->query("SELECT SUM(comissao_usuario) FROM relatorios");
+$total_comissao_usuarios = $stmt_total_comissao_usuarios->fetchColumn() ?? 0;
 
-// 1. Dados para o Gráfico Donut (Distribuição do Lucro)
-$stmt_total_comissao_users = $pdo->query("SELECT SUM(comissao_usuario) FROM relatorios");
-$total_comissao_usuarios = $stmt_total_comissao_users->fetchColumn() ?? 0;
-// Calcula o lucro líquido (o que sobra para o sistema)
-$lucro_liquido_sistema = $total_lucro - $total_comissao_gerentes - $total_comissao_usuarios;
 
-// 2. Dados para o Gráfico de Linha (Últimos 7 dias)
-$stmt_line_chart = $pdo->query("
+// --- DADOS PARA OS GRÁFICOS (Últimos 7 dias) ---
+$data_corte = date('Y-m-d', strtotime('-7 days'));
+$query_grafico = "
     SELECT 
-        DATE(data) as dia, 
-        SUM(lucro_diario) as lucro_total,
-        SUM(comissao_sub_adm) as comissao_total_gerente
-    FROM relatorios
-    WHERE data >= CURDATE() - INTERVAL 7 DAY
+        DATE(data) as dia,
+        SUM(lucro_diario) as lucro_diario,
+        SUM(comissao_admin) as lucro_sistema
+    FROM relatorios 
+    WHERE data >= ?
     GROUP BY dia
     ORDER BY dia ASC
-");
-$line_chart_data = $stmt_line_chart->fetchAll(PDO::FETCH_ASSOC);
+";
+$stmt_grafico = $pdo->prepare($query_grafico);
+$stmt_grafico->execute([$data_corte]);
+$dados_grafico_bruto = $stmt_grafico->fetchAll(PDO::FETCH_ASSOC);
 
-// Preparar dados para o JS (preenche dias vazios com 0)
-$chart_labels = [];
-$chart_lucro = [];
-$chart_comissao_gerente = [];
+$labels = [];
+$data_lucro = [];
+$data_sistema = [];
+
+// Preenche os dados para os últimos 7 dias (incluindo dias sem dados com valor 0)
 for ($i = 6; $i >= 0; $i--) {
-    $date = date('Y-m-d', strtotime("-$i days"));
-    $chart_labels[] = date('d/m', strtotime($date)); // Formato '30/10'
-    $chart_lucro[$date] = 0;
-    $chart_comissao_gerente[$date] = 0;
-}
-foreach ($line_chart_data as $row) {
-    $chart_lucro[$row['dia']] = $row['lucro_total'];
-    $chart_comissao_gerente[$row['dia']] = $row['comissao_total_gerente'];
+    $dia = date('Y-m-d', strtotime("-$i days"));
+    $labels[] = date('d/m', strtotime($dia));
+    
+    $found = false;
+    foreach ($dados_grafico_bruto as $d) {
+        if ($d['dia'] == $dia) {
+            $data_lucro[] = (float)$d['lucro_diario'];
+            $data_sistema[] = (float)$d['lucro_sistema'];
+            $found = true;
+            break;
+        }
+    }
+    if (!$found) {
+        $data_lucro[] = 0;
+        $data_sistema[] = 0;
+    }
 }
 
-// Busca todos os usuários (para o modal)
-$stmt_users = $pdo->query("SELECT id_usuario, nome FROM usuarios ORDER BY nome");
-$all_users = $stmt_users->fetchAll();
-$hoje = date('Y-m-d');
+$labels_json = json_encode($labels);
+$data_lucro_json = json_encode($data_lucro);
+$data_sistema_json = json_encode($data_sistema);
 
-include('templates/header.php'); 
+// --- TABELA DE PERFORMANCE DOS GERENTES (Admin/Sub-Admin) ---
+$query_ranking_managers = "
+    SELECT 
+        s.nome, 
+        s.role, 
+        SUM(r.comissao_sub_adm) AS comissao_total
+    FROM sub_administradores s
+    JOIN usuarios u ON u.manager_id = s.id
+    JOIN relatorios r ON r.id_usuario = u.id
+    GROUP BY s.id, s.nome, s.role
+    ORDER BY comissao_total DESC
+    LIMIT 5
+";
+$stmt_ranking = $pdo->query($query_ranking_managers);
+$ranking_managers = $stmt_ranking->fetchAll(PDO::FETCH_ASSOC);
+
+// --- DESPESAS DIÁRIAS GLOBAIS (Últimos 7 dias) ---
+$query_despesas_grafico = "
+    SELECT 
+        data, 
+        SUM(gastos_proxy) AS total_proxy, 
+        SUM(gastos_numeros) AS total_numeros
+    FROM despesas_diarias
+    WHERE data >= ?
+    GROUP BY data
+    ORDER BY data ASC
+";
+$stmt_despesas = $pdo->prepare($query_despesas_grafico);
+$stmt_despesas->execute([$data_corte]);
+$dados_despesas_bruto = $stmt_despesas->fetchAll(PDO::FETCH_ASSOC);
+
+$data_gastos_proxy = [];
+$data_gastos_numeros = [];
+$total_gastos_7d = 0;
+
+// Preenche os dados para os últimos 7 dias (usando as mesmas labels)
+for ($i = 0; $i < count($labels); $i++) {
+    $dia_format_db = date('Y-m-d', strtotime("-$i days", strtotime('+' . count($labels) . ' days', strtotime($data_corte))));
+    $found = false;
+    foreach ($dados_despesas_bruto as $d) {
+        if ($d['data'] == $dia_format_db) {
+            $data_gastos_proxy[] = (float)$d['total_proxy'];
+            $data_gastos_numeros[] = (float)$d['total_numeros'];
+            $total_gastos_7d += (float)$d['total_proxy'] + (float)$d['total_numeros'];
+            $found = true;
+            break;
+        }
+    }
+    if (!$found) {
+        $data_gastos_proxy[] = 0;
+        $data_gastos_numeros[] = 0;
+    }
+}
+// Como o loop acima foi decrescente, reverte as listas
+$data_gastos_proxy = array_reverse($data_gastos_proxy);
+$data_gastos_numeros = array_reverse($data_gastos_numeros);
+$data_gastos_proxy_json = json_encode($data_gastos_proxy);
+$data_gastos_numeros_json = json_encode($data_gastos_numeros);
+
+include('header.php'); 
 ?>
 
-<div class="container-fluid">
+<h2 class="mb-4">Visão Geral do Sistema</h2>
 
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h2 class="h3 mb-0">Painel do Super Administrador</h2>
-        <button type="button" class="btn btn-success btn-lg" data-bs-toggle="modal" data-bs-target="#modalEnviarRelatorio">
-            <i class="fas fa-plus-circle me-2"></i> Enviar Novo Relatório
-        </button>
-    </div>
-    <?php echo $message; ?>
-
-    <div class="row mb-4">
-        <div class="col-md-3 col-sm-6 mb-3">
-            <div class="card shadow-sm h-100"><div class="card-body text-center">
-                <h5 class="card-title text-muted">Total de Operadores</h5>
-                <p class="h2 display-5 fw-bold"><?php echo $total_users; ?></p>
-                <i class="fas fa-users fa-3x text-primary opacity-25"></i>
-            </div></div>
-        </div>
-        <div class="col-md-3 col-sm-6 mb-3">
-            <div class="card shadow-sm h-100"><div class="card-body text-center">
-                <h5 class="card-title text-muted">Total de Gerentes</h5>
-                <p class="h2 display-5 fw-bold"><?php echo $total_managers; ?></p>
-                <i class="fas fa-user-shield fa-3x text-info opacity-25"></i>
-            </div></div>
-        </div>
-        <div class="col-md-3 col-sm-6 mb-3">
-            <div class="card shadow-sm h-100"><div class="card-body text-center">
-                <h5 class="card-title text-muted">Lucro Total (Geral)</h5>
-                <p class="h2 display-5 fw-bold">R$ <?php echo number_format($total_lucro, 2, ',', '.'); ?></p>
-                <i class="fas fa-dollar-sign fa-3x text-success opacity-25"></i>
-            </div></div>
-        </div>
-        <div class="col-md-3 col-sm-6 mb-3">
-            <div class="card shadow-sm h-100"><div class="card-body text-center">
-                <h5 class="card-title text-muted">Comissão Gerentes (Geral)</h5>
-                <p class="h2 display-5 fw-bold">R$ <?php echo number_format($total_comissao_gerentes, 2, ',', '.'); ?></p>
-                <i class="fas fa-percentage fa-3x text-warning opacity-25"></i>
-            </div></div>
-        </div>
-    </div>
-
-    <div class="row mb-4">
-        <div class="col-lg-8 mb-3">
-            <div class="card shadow-sm h-100">
-                <div class="card-header">
-                    <i class="fas fa-chart-line me-2"></i>Desempenho (Últimos 7 Dias)
-                </div>
-                <div class="card-body">
-                    <canvas id="lucroLineChart"></canvas>
+<!-- Linha de KPIs -->
+<div class="row">
+    <!-- Lucro Bruto Total -->
+    <div class="col-md-6 col-lg-3 mb-4">
+        <div class="card bg-primary text-white shadow-sm">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <i class="fas fa-chart-line fa-3x me-3"></i>
+                    <div>
+                        <h5 class="card-title text-white">Lucro Bruto (Total)</h5>
+                        <h1 class="display-6 mb-0">R$ <?php echo number_format($total_lucro_bruto, 2, ',', '.'); ?></h1>
+                    </div>
                 </div>
             </div>
         </div>
-        <div class="col-lg-4 mb-3">
-            <div class="card shadow-sm h-100">
-                <div class="card-header">
-                    <i class="fas fa-chart-pie me-2"></i>Distribuição do Lucro (Total)
+    </div>
+
+    <!-- Lucro Líquido Sistema (50%) -->
+    <div class="col-md-6 col-lg-3 mb-4">
+        <div class="card bg-success text-white shadow-sm">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <i class="fas fa-wallet fa-3x me-3"></i>
+                    <div>
+                        <h5 class="card-title text-white">Lucro Líquido (Seu)</h5>
+                        <h1 class="display-6 mb-0">R$ <?php echo number_format($lucro_liquido_sistema, 2, ',', '.'); ?></h1>
+                    </div>
                 </div>
-                <div class="card-body">
+            </div>
+        </div>
+    </div>
+
+    <!-- Total de Gerentes -->
+    <div class="col-md-6 col-lg-3 mb-4">
+        <div class="card bg-warning text-dark shadow-sm">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <i class="fas fa-user-tie fa-3x me-3"></i>
+                    <div>
+                        <h5 class="card-title text-dark">Gerentes (Admin/Sub-Admin)</h5>
+                        <h1 class="display-6 mb-0"><?php echo $total_managers; ?></h1>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Total de Operadores -->
+    <div class="col-md-6 col-lg-3 mb-4">
+        <div class="card bg-info text-white shadow-sm">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <i class="fas fa-users fa-3x me-3"></i>
+                    <div>
+                        <h5 class="card-title text-white">Operadores (Usuários)</h5>
+                        <h1 class="display-6 mb-0"><?php echo $total_users; ?></h1>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Gráficos -->
+<div class="row">
+    <!-- Gráfico 1: Lucro Diário (Últimos 7 dias) -->
+    <div class="col-lg-8 mb-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header">
+                <h5 class="mb-0">Lucro Bruto e Líquido (Últimos 7 dias)</h5>
+            </div>
+            <div class="card-body">
+                <div style="height: 350px;">
+                    <canvas id="dailyProfitChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Gráfico 2: Distribuição de Comissão -->
+    <div class="col-lg-4 mb-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header">
+                <h5 class="mb-0">Distribuição Global de Lucro</h5>
+            </div>
+            <div class="card-body d-flex justify-content-center align-items-center">
+                <div style="width: 80%; max-height: 300px;">
                     <canvas id="comissaoDoughnutChart"></canvas>
                 </div>
             </div>
-        </div>
-    </div>
-
-    <div class="row">
-        <div class="col-12">
-            <h3 class="h4">Relatórios Recentes (Todos Usuários)</h3>
-            <div class="card shadow-sm">
-                <div class="card-body">
-                    <div class="table-responsive" style="max-height: 450px; overflow-y: auto;">
-                        <table id="relatoriosTable" class="table table-striped table-bordered table-sm">
-                            <thead class="table-dark sticky-top">
-                                <tr>
-                                    <th>Usuário</th><th>Depósito</th><th>Saque</th><th>Baú</th>
-                                    <th>Lucro</th><th>Com. U</th><th>Com. Sub</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php
-                                $stmt_reports = $pdo->query("
-                                    SELECT r.*, u.nome FROM relatorios r 
-                                    LEFT JOIN usuarios u ON r.id_usuario = u.id_usuario 
-                                    WHERE u.id_usuario IS NOT NULL ORDER BY r.data DESC LIMIT 15
-                                ");
-                                while ($row = $stmt_reports->fetch()) {
-                                    echo "<tr>
-                                            <td>" . htmlspecialchars($row['nome']) . "</td>
-                                            <td>R$ " . number_format($row['valor_deposito'], 2, ',', '.') . "</td>
-                                            <td>R$ " . number_format($row['valor_saque'], 2, ',', '.') . "</td>
-                                            <td>R$ " . number_format($row['valor_bau'], 2, ',', '.') . "</td>
-                                            <td>R$ " . number_format($row['lucro_diario'], 2, ',', '.') . "</td>
-                                            <td>R$ " . number_format($row['comissao_usuario'], 2, ',', '.') . "</td>
-                                            <td>R$ " . number_format($row['comissao_sub_adm'], 2, ',', '.') . "</td>
-                                          </tr>";
-                                }
-                                ?>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+            <div class="card-footer text-muted text-center">
+                <small>Divisão Baseada na Receita Total.</small>
             </div>
         </div>
     </div>
+</div>
 
-    <hr class="my-4">
-    <div class="row mt-4">
-        <div class="col-12">
-            <div class="alert alert-warning text-center shadow-sm">
-                <h6 class="alert-heading mb-0" style="font-weight: 300;">Próximo Pagamento do Servidor em:</h6>
-                <p class="h4" id="payment-countdown-main" style="font-weight: 700;">Calculando...</p>
-                <a href="https://mpago.la/1VcrHae" target="_blank" class="btn btn-danger btn-sm">Pagar Agora</a>
+<!-- Tabela de Ranking e Despesas -->
+<div class="row">
+    <!-- Ranking dos Gerentes -->
+    <div class="col-lg-6 mb-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header">
+                <h5 class="mb-0">Top 5 Gerentes por Comissão (Total)</h5>
             </div>
-            <script>
-            document.addEventListener("DOMContentLoaded", function() {
-                const countdownElement = document.getElementById("payment-countdown-main");
-                if (countdownElement) {
-                    const anchorDate = new Date("2025-10-01T00:00:00").getTime();
-                    const cycleLength = 30 * 24 * 60 * 60 * 1000;
-                    function updateTimerMain() {
-                        const now = new Date().getTime();
-                        const diff = now - anchorDate;
-                        const elapsedInCycle = diff % cycleLength;
-                        const timeRemaining = cycleLength - elapsedInCycle;
-                        const days = Math.floor(timeRemaining / (1000 * 60 * 60 * 24));
-                        const hours = Math.floor((timeRemaining % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-                        countdownElement.innerHTML = days + "d " + hours + "h";
-                    }
-                    updateTimerMain(); setInterval(updateTimerMain, 1000 * 60);
-                }
-            });
-            </script>
+            <div class="card-body table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>#</th>
+                            <th>Nome (Role)</th>
+                            <th class="text-end">Comissão Recebida</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($ranking_managers)): ?>
+                            <tr><td colspan="3" class="text-center text-muted">Nenhum dado de comissão encontrado.</td></tr>
+                        <?php endif; ?>
+                        <?php $rank = 1; foreach ($ranking_managers as $manager): ?>
+                        <tr>
+                            <td><?php echo $rank++; ?></td>
+                            <td><?php echo htmlspecialchars($manager['nome']); ?> (<?php echo strtoupper(str_replace('_', ' ', $manager['role'])); ?>)</td>
+                            <td class="text-end">R$ <?php echo number_format($manager['comissao_total'], 2, ',', '.'); ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
-
-    <hr class="my-4">
-    <div class="row mt-4">
-        <div class="col-12">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <h2>Registro de Atividades (Últimas 50)</h2>
-                <a href="view_logs.php" class="btn btn-primary">Ver Logs Diários (Histórico)</a>
+    
+    <!-- Despesas Diárias Globais -->
+     <div class="col-lg-6 mb-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header">
+                <h5 class="mb-0">Despesas Operacionais (Últimos 7 dias)</h5>
             </div>
-            <div class="card shadow-sm">
-                <div class="card-body">
-                    <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
-                        <table class="table table-striped table-hover table-sm">
-                            <thead class="table-dark sticky-top">
-                                <tr>
-                                    <th>Data</th><th>Usuário</th><th>Role</th><th>Ação</th><th>Descrição</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php
-                                $stmt_logs = $pdo->query("SELECT * FROM logs ORDER BY data DESC LIMIT 50");
-                                foreach ($stmt_logs->fetchAll() as $log) :
-                                ?>
-                                <tr>
-                                    <td><?php echo date('d/m/Y H:i:s', strtotime($log['data'])); ?></td>
-                                    <td><?php echo htmlspecialchars($log['nome_usuario_acao']); ?> (ID: <?php echo $log['id_usuario_acao'] ?? 'N/A'; ?>)</td>
-                                    <td><?php echo htmlspecialchars($log['role_usuario_acao']); ?></td>
-                                    <td><span class="badge bg-secondary"><?php echo htmlspecialchars($log['acao_tipo']); ?></span></td>
-                                    <td><?php echo htmlspecialchars($log['descricao']); ?></td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
+            <div class="card-body">
+                <h4 class="mb-3">Total de Gastos (7D): <span class="text-danger">R$ <?php echo number_format($total_gastos_7d, 2, ',', '.'); ?></span></h4>
+                <div style="height: 250px;">
+                    <canvas id="expensesBarChart"></canvas>
                 </div>
             </div>
         </div>
     </div>
 </div>
-<div class="modal fade" id="modalEnviarRelatorio" tabindex="-1" aria-labelledby="modalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="modalLabel">Enviar Novo Relatório</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <form action="process_transaction.php" method="POST">
-                    <div class="mb-3">
-                        <label for="usuario_id" class="form-label">Usuário (Todos)</label>
-                         <select class="form-control" name="usuario_id" required>
-                            <option value="">Selecione um usuário...</option>
-                            <?php
-                            foreach ($all_users as $user) {
-                                echo "<option value='{$user['id_usuario']}'>" . htmlspecialchars($user['nome']) . "</option>";
-                            }
-                            ?>
-                        </select>
-                    </div>
-                    <div class="mb-3">
-                        <label for="data_relatorio" class="form-label">Data do Relatório</label>
-                        <input type="date" class="form-control" name="data_relatorio" value="<?php echo $hoje; ?>" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="deposito" class="form-label">DEPÓSITO</label>
-                        <input type="number" step="0.01" class="form-control" name="deposito" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="saque" class="form-label">SAQUE</label>
-                        <input type="number" step="0.01" class="form-control" name="saque" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="bau" class="form-label">BAÚ (Saldo Final)</label>
-                        <input type="number" step="0.01" class="form-control" name="bau" required>
-                    </div>
-                    
-                    <button type="submit" class="btn btn-success w-100" <?php echo (empty($all_users)) ? 'disabled' : ''; ?>>
-                        <?php echo (empty($all_users)) ? 'Cadastre um usuário primeiro' : 'Enviar Relatório'; ?>
-                    </button>
-                </form>
-            </div>
-        </div>
-    </div>
-</div>
+
 <script>
-document.addEventListener("DOMContentLoaded", function() {
-    // --- 1. Gráfico de Linha (Lucro 7 dias) ---
-    const ctxLine = document.getElementById('lucroLineChart');
+document.addEventListener('DOMContentLoaded', function() {
+    // Dados injetados do PHP
+    const labels = <?php echo $labels_json; ?>;
+    const dataLucro = <?php echo $data_lucro_json; ?>;
+    const dataSistema = <?php echo $data_sistema_json; ?>;
+    const lucroLiquidoSistema = <?php echo $lucro_liquido_sistema; ?>;
+    const totalComissaoGerentes = <?php echo $total_comissao_gerentes; ?>;
+    const totalComissaoUsuarios = <?php echo $total_comissao_usuarios; ?>;
+    const dataGastosProxy = <?php echo $data_gastos_proxy_json; ?>;
+    const dataGastosNumeros = <?php echo $data_gastos_numeros_json; ?>;
+
+
+    // --- 1. Gráfico de Linha (Lucro Diário) ---
+    const ctxLine = document.getElementById('dailyProfitChart');
     if (ctxLine) {
         new Chart(ctxLine, {
             type: 'line',
             data: {
-                labels: <?php echo json_encode(array_values($chart_labels)); ?>,
+                labels: labels,
                 datasets: [{
-                    label: 'Lucro Total (R$)',
-                    data: <?php echo json_encode(array_values($chart_lucro)); ?>,
-                    borderColor: 'rgba(25, 135, 84, 1)', // Verde
-                    backgroundColor: 'rgba(25, 135, 84, 0.1)',
+                    label: 'Lucro Bruto (Total CPA)',
+                    data: dataLucro,
+                    borderColor: 'rgba(0, 123, 255, 1)', // Azul (Primary)
+                    backgroundColor: 'rgba(0, 123, 255, 0.2)',
                     fill: true,
                     tension: 0.2
-                }, {
-                    label: 'Comissão Gerentes (R$)',
-                    data: <?php echo json_encode(array_values($chart_comissao_gerente)); ?>,
-                    borderColor: 'rgba(255, 193, 7, 1)', // Amarelo
-                    backgroundColor: 'rgba(255, 193, 7, 0.1)',
+                },
+                {
+                    label: 'Lucro Líquido (Seu)',
+                    data: dataSistema,
+                    borderColor: 'rgba(25, 135, 84, 1)', // Verde (Success)
+                    backgroundColor: 'rgba(25, 135, 84, 0.2)',
                     fill: true,
                     tension: 0.2
                 }]
             },
             options: {
                 responsive: true,
-                maintainAspectRatio: false
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Valor (R$)'
+                        }
+                    }
+                }
             }
         });
     }
@@ -329,28 +362,105 @@ document.addEventListener("DOMContentLoaded", function() {
             type: 'doughnut',
             data: {
                 labels: [
-                    'Lucro (Sistema)', 
-                    'Comissão (Gerentes)', 
-                    'Comissão (Usuários)'
+                    'Lucro (Sistema) - (50%)', 
+                    'Comissão (Gerentes) - (10%)', 
+                    'Comissão (Usuários) - (40%)'
                 ],
                 datasets: [{
                     data: [
-                        <?php echo $lucro_liquido_sistema; ?>,
-                        <?php echo $total_comissao_gerentes; ?>,
-                        <?php echo $total_comissao_usuarios; ?>
+                        lucroLiquidoSistema,
+                        totalComissaoGerentes,
+                        totalComissaoUsuarios
                     ],
                     backgroundColor: [
-                        'rgba(25, 135, 84, 0.8)', // Verde (Sistema)
-                        'rgba(255, 193, 7, 0.8)', // Amarelo (Gerentes)
-                        'rgba(13, 110, 253, 0.8)'  // Azul (Usuários)
-                    ]
+                        'rgba(25, 135, 84, 0.8)', // Verde (Sistema - Success)
+                        'rgba(255, 193, 7, 0.8)', // Amarelo (Gerentes - Warning)
+                        'rgba(13, 110, 253, 0.8)'  // Azul (Usuários - Primary)
+                    ],
+                    hoverOffset: 10
                 }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {
-                    legend: { position: 'bottom' }
+                    legend: { 
+                        position: 'bottom',
+                        labels: {
+                            usePointStyle: true,
+                        }
+                    },
+                    tooltip: {
+                         callbacks: {
+                            label: function(context) {
+                                let label = context.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed !== null) {
+                                    label += 'R$ ' + context.parsed.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+                                }
+                                return label;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    
+    // --- 3. Gráfico de Barras (Despesas) ---
+    const ctxExpenses = document.getElementById('expensesBarChart');
+    if (ctxExpenses) {
+        new Chart(ctxExpenses, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Gastos com Proxy',
+                    data: dataGastosProxy,
+                    backgroundColor: 'rgba(220, 53, 69, 0.8)', // Vermelho (Danger)
+                    borderColor: 'rgba(220, 53, 69, 1)',
+                    borderWidth: 1
+                }, {
+                    label: 'Gastos com Números',
+                    data: dataGastosNumeros,
+                    backgroundColor: 'rgba(108, 117, 125, 0.8)', // Cinza (Secondary)
+                    borderColor: 'rgba(108, 117, 125, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        stacked: true,
+                    },
+                    y: {
+                        stacked: true,
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Valor (R$)'
+                        }
+                    }
+                },
+                plugins: {
+                    tooltip: {
+                         callbacks: {
+                            label: function(context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.y !== null) {
+                                    label += 'R$ ' + context.parsed.y.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+                                }
+                                return label;
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -359,6 +469,5 @@ document.addEventListener("DOMContentLoaded", function() {
 </script>
 
 <?php 
-// Inclui o footer (que fecha o layout e carrega o Chart.js)
-include('templates/footer.php'); 
+include('footer.php');
 ?>

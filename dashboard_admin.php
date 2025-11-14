@@ -1,292 +1,341 @@
 <?php
 session_start();
 include('config/db.php');
-date_default_timezone_set('America/Sao_Paulo'); // Define o Fuso Horário
-include('config/logger.php'); // Inclui o sistema de Log
+date_default_timezone_set('America/Sao_Paulo'); 
+include('config/logger.php');
 
-// Verificação de segurança: Apenas 'admin' ou 'sub_adm' pode ver esta página
-if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['admin', 'sub_adm'])) {
+$page_title = "Dashboard (Administrador)";
+
+// Verificação de segurança
+if (!isset($_SESSION['role']) || $_SESSION['role'] != 'admin') {
     header('Location: login.php');
     exit;
 }
-$id_admin_logado = $_SESSION['id'];
-$role = $_SESSION['role'];
+$id_admin_logado = $_SESSION['user_id'];
 
-// Mensagem de status (se houver)
+// Mensagem de sucesso/erro
 $message = "";
 if (isset($_GET['status']) && $_GET['status'] == 'success') {
-    $message = "<div class='alert alert-success'>Relatório enviado com sucesso!</div>";
+    $message = "<div class='alert alert-success mt-3'>Transação registrada com sucesso!</div>";
+} elseif (isset($_GET['status']) && $_GET['status'] == 'error') {
+     $message = "<div class='alert alert-danger mt-3'>Erro ao registrar transação.</div>";
 }
 
 
-// --- LÓGICA DE FILTRO DE DATA (HOJE/ONTEM/DATA ESPECÍFICA) ---
-$date_filter = date('Y-m-d'); // Padrão: Hoje
-if (isset($_GET['date'])) {
-    if ($_GET['date'] == 'yesterday') {
-        $date_filter = date('Y-m-d', strtotime('-1 day'));
-    } elseif (DateTime::createFromFormat('Y-m-d', $_GET['date'])) {
-        $date_filter = $_GET['date'];
-    }
-}
-$date_end_query = $date_filter . ' 23:59:59';
-$date_start_query = $date_filter . ' 00:00:00';
-// --- FIM LÓGICA DE FILTRO DE DATA ---
+// --- QUERIES PARA OS CARDS DE ESTATÍSTICAS (KPIs) - Filtrado por gerência ---
 
-
-// --- QUERIES GLOBAIS (TOTAIS DA EQUIPE DO ADMIN) ---
-
-// 1. Total de Operadores Vinculados
-$stmt_total_users = $pdo->prepare("SELECT COUNT(*) FROM usuarios WHERE id_sub_adm = ?");
+// 1. Total de Operadores (Usuários) sob o Admin
+$stmt_total_users = $pdo->prepare("SELECT COUNT(*) FROM usuarios WHERE manager_id = ? AND role = 'usuario'");
 $stmt_total_users->execute([$id_admin_logado]);
-$total_users_equipe = $stmt_total_users->fetchColumn() ?? 0;
+$total_users = $stmt_total_users->fetchColumn();
 
-// 2. Lucro TOTAL BRUTO, Investido, Saque+Baú (DA SUA EQUIPE)
-$stmt_totais_equipe_geral = $pdo->prepare("
-    SELECT 
-        SUM(r.lucro_diario) AS total_lucro_bruto,
-        SUM(r.valor_deposito) AS total_deposito,
-        SUM(r.valor_saque) + SUM(r.valor_bau) AS total_saque_bau,
-        SUM(r.comissao_sub_adm) AS total_comissao_gerente
-    FROM relatorios r
-    JOIN usuarios u ON r.id_usuario = u.id_usuario
-    WHERE u.id_sub_adm = ?
-");
-$stmt_totais_equipe_geral->execute([$id_admin_logado]);
-$totais_equipe_geral = $stmt_totais_equipe_geral->fetch(PDO::FETCH_ASSOC);
+// 2. Total de Sub-Admins sob o Admin
+$stmt_total_subadmins = $pdo->prepare("SELECT COUNT(*) FROM sub_administradores WHERE manager_id = ? AND role = 'sub_adm'");
+$stmt_total_subadmins->execute([$id_admin_logado]);
+$total_subadmins = $stmt_total_subadmins->fetchColumn();
 
-$lucro_total_bruto_equipe = $totais_equipe_geral['total_lucro_bruto'] ?? 0;
-$lucro_liquido_gerente_acumulado = $totais_equipe_geral['total_comissao_gerente'] ?? 0;
-$total_investido_geral = $totais_equipe_geral['total_deposito'] ?? 0;
-$total_saque_bau_geral = $totais_equipe_geral['total_saque_bau'] ?? 0;
+// Lista de IDs (Operadores e Sub-Admins) para incluir nos relatórios
+$manager_ids = [$id_admin_logado]; // O próprio admin
+$stmt_subadmins_ids = $pdo->prepare("SELECT id FROM sub_administradores WHERE manager_id = ? AND role = 'sub_adm'");
+$stmt_subadmins_ids->execute([$id_admin_logado]);
+while ($row = $stmt_subadmins_ids->fetch(PDO::FETCH_ASSOC)) {
+    $manager_ids[] = $row['id'];
+}
+$manager_ids_str = implode(',', array_fill(0, count($manager_ids), '?'));
+$manager_ids_params = $manager_ids;
 
 
-// 3. Registros (Dias Únicos com Operações da SUA EQUIPE)
-$stmt_registros = $pdo->prepare("
-    SELECT COUNT(DISTINCT DATE(r.data)) 
-    FROM relatorios r 
-    JOIN usuarios u ON r.id_usuario = u.id_usuario 
-    WHERE u.id_sub_adm = ?
-");
-$stmt_registros->execute([$id_admin_logado]);
-$dias_registrados = $stmt_registros->fetchColumn() ?? 0;
+// Obter IDs de todos os operadores gerenciados (direta ou indiretamente via sub-admins)
+$user_ids = [];
+$users_query = "SELECT id FROM usuarios WHERE manager_id IN (" . $manager_ids_str . ") AND role = 'usuario'";
+$stmt_users = $pdo->prepare($users_query);
+$stmt_users->execute($manager_ids_params);
+while ($row = $stmt_users->fetch(PDO::FETCH_ASSOC)) {
+    $user_ids[] = $row['id'];
+}
+$user_ids_str = implode(',', array_fill(0, count($user_ids), '?'));
+$user_ids_params = $user_ids;
 
-// --- CÁLCULOS DE MÉDIA E ROI ---
-$media_diaria = ($dias_registrados > 0) ? ($lucro_liquido_gerente_acumulado / $dias_registrados) : 0;
-$roi = 0;
-if ($total_investido_geral > 0) {
-    $lucro_bruto_total_roi = $total_saque_bau_geral - $total_investido_geral; 
-    $roi = ($lucro_bruto_total_roi / $total_investido_geral) * 100;
+
+// 3. Lucro Bruto Total (Filtrado pelos operadores gerenciados)
+$total_lucro_bruto = 0;
+if (!empty($user_ids_params)) {
+    $query_lucro = "SELECT SUM(lucro_diario) FROM relatorios WHERE id_usuario IN (" . $user_ids_str . ")";
+    $stmt_lucro = $pdo->prepare($query_lucro);
+    $stmt_lucro->execute($user_ids_params);
+    $total_lucro_bruto = $stmt_lucro->fetchColumn() ?? 0;
 }
 
+// 4. Lucro Líquido do Admin (Soma de comissao_sub_adm de seus operadores e sub-admins)
+$lucro_liquido_admin = 0;
+if (!empty($user_ids_params)) {
+    $query_comissao = "SELECT SUM(comissao_sub_adm) FROM relatorios WHERE id_usuario IN (" . $user_ids_str . ")";
+    $stmt_comissao = $pdo->prepare($query_comissao);
+    $stmt_comissao->execute($user_ids_params);
+    $lucro_liquido_admin = $stmt_comissao->fetchColumn() ?? 0;
+}
 
-// 4. Melhor Dia e Pior Dia (Lucro líquido do Gerente nos últimos 7 dias)
-$stmt_melhor_pior = $pdo->prepare("
-    SELECT 
-        MAX(lucro_gerente_diario) as melhor_dia_valor,
-        MIN(lucro_gerente_diario) as pior_dia_valor
-    FROM (
+// --- DADOS PARA OS GRÁFICOS (Últimos 7 dias) - Lucro Líquido do Admin ---
+$data_corte = date('Y-m-d', strtotime('-7 days'));
+$data_admin_grafico = [];
+$labels = [];
+
+if (!empty($user_ids)) {
+    $user_ids_in_clause = implode(',', $user_ids);
+    $query_grafico = "
         SELECT 
-            DATE(r.data) as dia, 
-            SUM(r.comissao_sub_adm) as lucro_gerente_diario
-        FROM relatorios r
-        JOIN usuarios u ON r.id_usuario = u.id_usuario
-        WHERE u.id_sub_adm = ? AND r.data >= CURDATE() - INTERVAL 7 DAY
+            DATE(data) as dia,
+            SUM(comissao_sub_adm) as lucro_admin
+        FROM relatorios 
+        WHERE id_usuario IN ($user_ids_in_clause) AND data >= ?
         GROUP BY dia
-    ) as lucros_diarios
-");
-$stmt_melhor_pior->execute([$id_admin_logado]);
-$melhor_pior = $stmt_melhor_pior->fetch(PDO::FETCH_ASSOC);
-$melhor_dia_valor = $melhor_pior['melhor_dia_valor'] ?? 0;
-$pior_dia_valor = $melhor_pior['pior_dia_valor'] ?? 0;
+        ORDER BY dia ASC
+    ";
+    $stmt_grafico = $pdo->prepare($query_grafico);
+    $stmt_grafico->execute([$data_corte]);
+    $dados_grafico_bruto = $stmt_grafico->fetchAll(PDO::FETCH_ASSOC);
 
-
-// 5. Dados para o GRÁFICO (Evolução do Saldo - 30 dias)
-$stmt_line_chart = $pdo->prepare("
-    SELECT 
-        DATE(r.data) as dia, 
-        SUM(r.comissao_sub_adm) as lucro_gerente_diario,
-        SUM(r.lucro_diario) as lucro_bruto_diario
-    FROM relatorios r
-    JOIN usuarios u ON r.id_usuario = u.id_usuario
-    WHERE u.id_sub_adm = ? AND r.data >= CURDATE() - INTERVAL 30 DAY
-    GROUP BY dia
-    ORDER BY dia ASC
-");
-$stmt_line_chart->execute([$id_admin_logado]);
-$line_chart_data_raw = $stmt_line_chart->fetchAll(PDO::FETCH_ASSOC);
-
-// Preparar dados para o JS (Acúmulo de Lucro do Gerente)
-$chart_labels = [];
-$chart_lucro_bruto_diario = []; 
-$chart_lucro_gerente_acumulado = [];
-$date_keys = [];
-
-for ($i = 29; $i >= 0; $i--) {
-    $date = date('Y-m-d', strtotime("-$i days"));
-    $date_keys[$date] = ['lucro_gerente' => 0, 'lucro_bruto' => 0];
-    $chart_labels[] = date('d/m', strtotime($date));
-}
-foreach ($line_chart_data_raw as $row) {
-    if (isset($date_keys[$row['dia']])) {
-        $date_keys[$row['dia']]['lucro_gerente'] = (float)$row['lucro_gerente_diario'];
-        $date_keys[$row['dia']]['lucro_bruto'] = (float)$row['lucro_bruto_diario'];
+    // Preenche os dados para os últimos 7 dias (incluindo dias sem dados com valor 0)
+    for ($i = 6; $i >= 0; $i--) {
+        $dia = date('Y-m-d', strtotime("-$i days"));
+        $labels[] = date('d/m', strtotime($dia));
+        
+        $found = false;
+        foreach ($dados_grafico_bruto as $d) {
+            if ($d['dia'] == $dia) {
+                $data_admin_grafico[] = (float)$d['lucro_admin'];
+                $found = true;
+                break;
+            }
+        }
+        if (!$found) {
+            $data_admin_grafico[] = 0;
+        }
+    }
+} else {
+     // Preenche com 0 se não houver usuários gerenciados
+     for ($i = 6; $i >= 0; $i--) {
+        $labels[] = date('d/m', strtotime("-$i days"));
+        $data_admin_grafico[] = 0;
     }
 }
 
-// Cálculo do Acumulado (Começa em 0 no período de 30 dias)
-$saldo_acumulado_temp = 0;
-foreach ($date_keys as $data) {
-    $saldo_acumulado_temp += $data['lucro_gerente']; 
-    $chart_lucro_gerente_acumulado[] = $saldo_acumulado_temp;
-    $chart_lucro_bruto_diario[] = $data['lucro_bruto'];
+
+$labels_json = json_encode($labels);
+$data_admin_grafico_json = json_encode($data_admin_grafico);
+
+// --- TABELA DE MELHORES OPERADORES (Top 5) ---
+$ranking_users = [];
+if (!empty($user_ids_params)) {
+    $query_ranking_users = "
+        SELECT 
+            u.nome, 
+            SUM(r.comissao_usuario) AS comissao_total
+        FROM usuarios u
+        JOIN relatorios r ON r.id_usuario = u.id
+        WHERE u.id IN (" . $user_ids_str . ")
+        GROUP BY u.id, u.nome
+        ORDER BY comissao_total DESC
+        LIMIT 5
+    ";
+    $stmt_ranking = $pdo->prepare($query_ranking_users);
+    $stmt_ranking->execute($user_ids_params);
+    $ranking_users = $stmt_ranking->fetchAll(PDO::FETCH_ASSOC);
 }
 
+// --- DADOS DA META MENSAL ---
+$ano_mes_atual = date('Y-m');
+$stmt_meta = $pdo->prepare("SELECT valor_meta FROM metas_mensais WHERE id_admin = ? AND ano_mes = ?");
+$stmt_meta->execute([$id_admin_logado, $ano_mes_atual]);
+$meta_atual = $stmt_meta->fetch(PDO::FETCH_ASSOC);
+$valor_meta_atual = $meta_atual ? (float)$meta_atual['valor_meta'] : 0;
+$progresso_percentual = $valor_meta_atual > 0 ? ($lucro_liquido_admin / $valor_meta_atual) * 100 : 0;
 
-// 6. Totais do Dia Filtrado (Para os 4 Cards de Cima)
-$stmt_acumulado_dia = $pdo->prepare("
-    SELECT 
-        SUM(r.lucro_diario) as total_lucro_bruto_dia,
-        SUM(r.comissao_sub_adm) as total_comissao_gerente_dia,
-        SUM(r.comissao_usuario) as total_pago_operadores_dia,
-        SUM(r.comissao_admin) as total_comissao_admin_dia
-    FROM relatorios r
-    JOIN usuarios u ON r.id_usuario = u.id_usuario
-    WHERE u.id_sub_adm = ? AND (r.data BETWEEN ? AND ?)
-");
-$stmt_acumulado_dia->execute([$id_admin_logado, $date_start_query, $date_end_query]);
-$acumulado_dia = $stmt_acumulado_dia->fetch(PDO::FETCH_ASSOC);
-
-$total_lucro_bruto_dia = $acumulado_dia['total_lucro_bruto_dia'] ?? 0;
-$total_comissao_gerente_dia = $acumulado_dia['total_comissao_gerente_dia'] ?? 0;
-$total_pagamentos_operadores_dia = $acumulado_dia['total_pago_operadores_dia'] ?? 0;
-$total_comissao_admin_dia = $acumulado_dia['total_comissao_admin_dia'] ?? 0;
-
-
-include('templates/header.php'); 
+include('header.php'); 
 ?>
 
-<div class="container-fluid">
+<h2 class="mb-4">Visão Geral da Minha Gerência</h2>
 
-    <div class="mb-8 flex items-center justify-between">
-        <div>
-            <h1 class="text-4xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent mb-2">Painel de Gerência</h1>
-            <p class="text-muted-foreground">Visão geral e desempenho da sua equipe</p>
-        </div>
-        
-        <div class="d-flex flex-row gap-2 align-items-center">
-            <a href="?date=yesterday" class="btn btn-outline-secondary btn-sm <?php echo ($_GET['date'] ?? '') == 'yesterday' ? 'active' : ''; ?>">Ontem</a>
-            <a href="?date=<?php echo date('Y-m-d'); ?>" class="btn btn-outline-secondary btn-sm <?php echo !isset($_GET['date']) || $_GET['date'] == date('Y-m-d') ? 'active' : ''; ?>">Hoje</a>
-            <form method="GET" class="d-flex gap-2">
-                <input type="date" name="date" class="form-control form-control-sm" value="<?php echo htmlspecialchars($date_filter); ?>">
-                <button type="submit" class="btn btn-primary btn-sm">Filtrar</button>
-            </form>
-        </div>
-    </div>
-    <?php echo $message; // Exibe mensagens de sucesso/erro ?>
-
-    <h3 class="h5 mb-3">Métricas Acumuladas (Dia Filtrado: <?php echo date('d/m/Y', strtotime($date_filter)); ?>)</h3>
-    <div class="grid gap-6 mb-8 md:grid-cols-2 lg:grid-cols-4">
-        
-        <div class="rounded-lg border bg-card text-card-foreground shadow-sm border-l-4 border-l-green-500">
-            <div class="p-6 flex flex-row items-center justify-between space-y-0 pb-2">
-                <h3 class="text-xs text-muted-foreground mt-1">Sua Comissão</h3>
-                <i class="fas fa-chart-line h-4 w-4 text-green-600"></i>
-            </div>
-            <div class="p-6 pt-0">
-                <div class="text-2xl font-bold text-green-600">R$ <?php echo number_format($total_comissao_gerente_dia, 2, ',', '.'); ?></div>
-                <p class="text-xs text-muted-foreground mt-1">Lucro Líquido do Subadmin</p>
-            </div>
-        </div>
-        
-        <div class="rounded-lg border bg-card text-card-foreground shadow-sm border-l-4 border-l-blue-500">
-            
-            <div class="p-6 pt-0">
-                <div class="text-2xl font-bold text-blue-600">R$ <?php echo number_format($total_pagamentos_operadores_dia, 2, ',', '.'); ?></div>
-                <p class="text-xs text-muted-foreground mt-1">Total pago à sua equipe</p>
-            </div>
-        </div>
-</div>
-    
-    
-
-    <div class="row mb-4">
-        <div class="col-12">
-            <div class="card shadow-sm h-100">
-                <div class="card-header">
-                    <h3 class="text-lg font-semibold">Evolução da Sua Comissão (Últimos 30 Dias)</h3>
-                </div>
-                <div class="card-body">
-                    <div style="height: 300px;">
-                        <canvas id="lucroLineChart"></canvas>
+<!-- Linha de KPIs e Meta -->
+<div class="row">
+    <!-- Lucro Líquido (Seu) -->
+    <div class="col-md-6 col-lg-3 mb-4">
+        <div class="card bg-success text-white shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <i class="fas fa-wallet fa-3x me-3"></i>
+                    <div>
+                        <h5 class="card-title text-white">Lucro Líquido (Minha Parte)</h5>
+                        <h1 class="display-6 mb-0">R$ <?php echo number_format($lucro_liquido_admin, 2, ',', '.'); ?></h1>
                     </div>
                 </div>
             </div>
         </div>
     </div>
 
-    </div> <script>
-document.addEventListener("DOMContentLoaded", function() {
+    <!-- Total Operadores -->
+    <div class="col-md-6 col-lg-3 mb-4">
+        <div class="card bg-info text-white shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <i class="fas fa-user fa-3x me-3"></i>
+                    <div>
+                        <h5 class="card-title text-white">Operadores (Diretos/Indiretos)</h5>
+                        <h1 class="display-6 mb-0"><?php echo $total_users; ?></h1>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
     
-    // Configuração global de cores para o Chart.js (para o tema dark)
-    Chart.defaults.color = 'hsl(var(--muted-foreground))'; 
-    
-    const datasets = [];
+    <!-- Total Sub-Admins -->
+    <div class="col-md-6 col-lg-3 mb-4">
+        <div class="card bg-warning text-dark shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <i class="fas fa-users-cog fa-3x me-3"></i>
+                    <div>
+                        <h5 class="card-title text-dark">Sub-Admins Gerenciados</h5>
+                        <h1 class="display-6 mb-0"><?php echo $total_subadmins; ?></h1>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
-    // --- 1. Saldo Acumulado (Gerente - 10%) ---
-    datasets.push({
-        label: 'Sua Comissão Acumulada', 
-        data: <?php echo json_encode(array_values($chart_lucro_gerente_acumulado)); ?>,
-        borderColor: 'rgba(117, 79, 254, 1)', // Roxo
-        backgroundColor: 'rgba(117, 79, 254, 0.1)',
-        fill: true,
-        tension: 0.4,
-        borderWidth: 3
-    });
+    <!-- Meta Mensal -->
+    <div class="col-md-6 col-lg-3 mb-4">
+        <div class="card shadow-sm border-l-4 border-l-primary h-100">
+            <div class="card-body">
+                 <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="card-title">Meta Mensal</h5>
+                    <a href="metas.php" class="btn btn-sm btn-outline-primary">Ajustar</a>
+                 </div>
+                 <?php if ($valor_meta_atual > 0): ?>
+                    <h1 class="display-6 mb-2 text-primary">R$ <?php echo number_format($valor_meta_atual, 2, ',', '.'); ?></h1>
+                    <div class="progress" style="height: 1.5rem;">
+                        <div class="progress-bar bg-primary" role="progressbar" 
+                             style="width: <?php echo min($progresso_percentual, 100); ?>%;" 
+                             aria-valuenow="<?php echo $progresso_percentual; ?>" 
+                             aria-valuemin="0" aria-valuemax="100">
+                            <b><?php echo number_format(min($progresso_percentual, 100), 1, ',', '.'); ?>%</b>
+                        </div>
+                    </div>
+                    <small class="text-muted">Progresso: R$ <?php echo number_format($lucro_liquido_admin, 2, ',', '.'); ?></small>
+                <?php else: ?>
+                    <h1 class="display-6 mb-2 text-muted">Não Definida</h1>
+                    <p class="text-muted">Defina uma meta em Metas Mensais.</p>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+</div>
 
-    // --- 2. Lucro Bruto Diário (Equipe) ---
-    datasets.push({
-        label: 'Lucro Bruto Diário (Equipe)', 
-        data: <?php echo json_encode(array_values($chart_lucro_bruto_diario)); ?>,
-        borderColor: 'rgba(13, 110, 253, 0.5)', // Azul (Mais discreto)
-        backgroundColor: 'transparent',
-        fill: false,
-        tension: 0.2,
-        borderDash: [5, 5] // Linha tracejada para o valor diário
-    });
+<!-- Gráfico de Lucro Líquido e Ranking de Operadores -->
+<div class="row">
+    <!-- Gráfico de Lucro Líquido (Linha) -->
+    <div class="col-lg-8 mb-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header">
+                <h5 class="mb-0">Minha Comissão Líquida (Últimos 7 dias)</h5>
+            </div>
+            <div class="card-body">
+                <div style="height: 350px;">
+                    <canvas id="adminProfitChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
 
-    // --- Renderiza o Gráfico de Linha ---
-    const ctxLine = document.getElementById('lucroLineChart');
+    <!-- Ranking de Operadores -->
+    <div class="col-lg-4 mb-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header">
+                <h5 class="mb-0">Top 5 Operadores por Comissão (Total)</h5>
+            </div>
+            <div class="card-body table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>#</th>
+                            <th>Operador</th>
+                            <th class="text-end">Comissão (R$)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($ranking_users)): ?>
+                            <tr><td colspan="3" class="text-center text-muted">Nenhum operador com dados.</td></tr>
+                        <?php endif; ?>
+                        <?php $rank = 1; foreach ($ranking_users as $user): ?>
+                        <tr>
+                            <td><?php echo $rank++; ?></td>
+                            <td><?php echo htmlspecialchars($user['nome']); ?></td>
+                            <td class="text-end">R$ <?php echo number_format($user['comissao_total'], 2, ',', '.'); ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Dados injetados do PHP
+    const labels = <?php echo $labels_json; ?>;
+    const dataAdminProfit = <?php echo $data_admin_grafico_json; ?>;
+
+    // --- Gráfico de Linha (Lucro Admin) ---
+    const ctxLine = document.getElementById('adminProfitChart');
     if (ctxLine) {
         new Chart(ctxLine, {
             type: 'line',
             data: {
-                labels: <?php echo json_encode(array_values($chart_labels)); ?>,
-                datasets: datasets
+                labels: labels,
+                datasets: [{
+                    label: 'Minha Comissão Líquida',
+                    data: dataAdminProfit,
+                    borderColor: 'rgba(40, 167, 69, 1)', // Verde escuro para lucro
+                    backgroundColor: 'rgba(40, 167, 69, 0.2)',
+                    fill: true,
+                    tension: 0.2
+                }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 scales: {
-                    x: { 
-                        ticks: { color: 'hsl(var(--muted-foreground))' }, 
-                        grid: { color: 'hsl(var(--border))' } 
-                    },
-                    y: { 
-                        ticks: { color: 'hsl(var(--muted-foreground))' }, 
-                        grid: { color: 'hsl(var(--border))' } 
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Valor (R$)'
+                        }
                     }
                 },
                 plugins: {
-                    legend: { labels: { color: 'hsl(var(--foreground))' } }
+                    tooltip: {
+                         callbacks: {
+                            label: function(context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.y !== null) {
+                                    label += 'R$ ' + context.parsed.y.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+                                }
+                                return label;
+                            }
+                        }
+                    }
                 }
             }
         });
     }
-    
 });
 </script>
 
 <?php 
-// Inclui o footer (que fecha o layout e carrega o Chart.js)
-include('templates/footer.php'); 
+include('footer.php');
 ?>

@@ -1,78 +1,104 @@
 <?php
 session_start();
 include('config/db.php');
-include('config/logger.php'); // Incluído
+date_default_timezone_set('America/Sao_Paulo'); 
+include('config/logger.php');
 
-// Apenas Gerentes (todos os níveis) podem ver
+// Verificação de segurança: Apenas Super Admin, Admin e Sub-Admin podem processar a edição
 if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['super_adm', 'admin', 'sub_adm'])) {
     header('Location: login.php');
     exit;
 }
+$role_logado = $_SESSION['role'];
+$id_logado = $_SESSION['user_id'];
 
-$role = $_SESSION['role'];
-$id_logado = $_SESSION['id'];
 
-if ($_SERVER["REQUEST_METHOD"] == "POST") {
-    // Coletar dados do formulário
-    $id_usuario = $_POST['id_usuario'];
-    $nome = $_POST['nome'];
-    $email = $_POST['email'];
-    $senha = $_POST['senha']; 
-    $percentual_comissao = $_POST['percentual_comissao'];
+if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+    
+    $id_usuario = $_POST['id_usuario'] ?? null;
+    $nome = trim($_POST['nome'] ?? '');
+    $email = trim($_POST['email'] ?? '');
+    $comissao = (float)($_POST['percentual_comissao'] ?? 0);
+    $new_password = $_POST['new_password'] ?? '';
+    $confirm_password = $_POST['confirm_password'] ?? '';
+    $manager_id = $_POST['manager_id'] ?? null;
+    $redirect_url = 'edit_user.php?id=' . $id_usuario;
+
+    // 1. Validação básica
+    if (!$id_usuario || empty($nome) || empty($email) || $comissao == '' || $manager_id === null) {
+        header('Location: ' . $redirect_url . '&status=error_fields');
+        exit;
+    }
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+         header('Location: ' . $redirect_url . '&status=error_email_format');
+        exit;
+    }
+    if ($comissao < 0 || $comissao > 100) {
+        header('Location: ' . $redirect_url . '&status=error_comissao_range');
+        exit;
+    }
+    if (!empty($new_password) && $new_password !== $confirm_password) {
+        header('Location: ' . $redirect_url . '&status=error_password_match');
+        exit;
+    }
 
     try {
-        // --- Lógica de segurança ---
-        $where_clause = " WHERE id_usuario = ?";
-        $params_check = [$id_usuario];
+        // 2. Verificação de permissão (Admin/Sub-Admin só pode editar seus usuários)
+        $stmt_check = $pdo->prepare("SELECT manager_id FROM usuarios WHERE id = ? AND role = 'usuario'");
+        $stmt_check->execute([$id_usuario]);
+        $usuario_edit_data = $stmt_check->fetch(PDO::FETCH_ASSOC);
 
-        if ($role == 'admin' || $role == 'sub_adm') {
-            $where_clause .= " AND id_sub_adm = ?";
-            $params_check[] = $id_logado;
+        if (!$usuario_edit_data) {
+             // Usuário a ser editado não existe ou não é um 'usuario'
+            header('Location: manage_users.php?status=error_not_found');
+            exit;
         }
 
-        $stmt_check = $pdo->prepare("SELECT id_usuario FROM usuarios" . $where_clause);
-        $stmt_check->execute($params_check);
-        
-        if (!$stmt_check->fetch()) {
-            throw new Exception("Permissão negada ou usuário não encontrado (ID: $id_usuario).");
+        // Se não for super_adm, verifica se é o manager do usuário
+        if ($role_logado != 'super_adm' && $usuario_edit_data['manager_id'] != $id_logado) {
+            log_acao("Acesso negado (edição): Usuário ID " . $id_logado . " tentou editar operador ID " . $id_usuario);
+            header('Location: manage_users.php?status=error_permission');
+            exit;
         }
 
-        // --- Lógica de atualização baseada na permissão ---
-        $params_update = [];
-        
-        if ($role == 'super_adm') {
-            // Super Admin pode mudar o vínculo
-            $id_sub_adm = (!empty($_POST['id_sub_adm'])) ? (int)$_POST['id_sub_adm'] : null;
-            
-            if (!empty($senha)) {
-                $sql_update = "UPDATE usuarios SET nome = ?, email = ?, senha = ?, percentual_comissao = ?, id_sub_adm = ? WHERE id_usuario = ?";
-                $params_update = [$nome, $email, $senha, $percentual_comissao, $id_sub_adm, $id_usuario];
-            } else {
-                $sql_update = "UPDATE usuarios SET nome = ?, email = ?, percentual_comissao = ?, id_sub_adm = ? WHERE id_usuario = ?";
-                $params_update = [$nome, $email, $percentual_comissao, $id_sub_adm, $id_usuario];
-            }
-        } else {
-            // Admin/Sub-Adm NÃO pode mudar o vínculo
-            if (!empty($senha)) {
-                $sql_update = "UPDATE usuarios SET nome = ?, email = ?, senha = ?, percentual_comissao = ? WHERE id_usuario = ? AND id_sub_adm = ?";
-                $params_update = [$nome, $email, $senha, $percentual_comissao, $id_usuario, $id_logado];
-            } else {
-                $sql_update = "UPDATE usuarios SET nome = ?, email = ?, percentual_comissao = ? WHERE id_usuario = ? AND id_sub_adm = ?";
-                $params_update = [$nome, $email, $percentual_comissao, $id_usuario, $id_logado];
-            }
+        // 3. Verificar duplicidade de email (exceto o email atual do usuário)
+        $stmt_email_check = $pdo->prepare("
+            SELECT email FROM usuarios WHERE email = ? AND id != ?
+            UNION ALL
+            SELECT email FROM sub_administradores WHERE email = ?
+        ");
+        $stmt_email_check->execute([$email, $id_usuario, $email]);
+        if ($stmt_email_check->fetch()) {
+            header('Location: ' . $redirect_url . '&status=error_email_exists');
+            exit;
         }
+        
+        // 4. Preparar a atualização do usuário
+        $sql = "UPDATE usuarios SET nome = ?, email = ?, percentual_comissao = ?, manager_id = ?";
+        $params = [$nome, $email, $comissao, $manager_id];
+        
+        if (!empty($new_password)) {
+            $hashed_password = password_hash($new_password, PASSWORD_DEFAULT);
+            $sql .= ", senha = ?";
+            $params[] = $hashed_password;
+        }
+        
+        $sql .= " WHERE id = ?";
+        $params[] = $id_usuario;
 
-        $stmt = $pdo->prepare($sql_update);
-        $stmt->execute($params_update);
-        
-        log_action($pdo, 'USER_UPDATE', "Usuário '{$nome}' (ID: $id_usuario) foi atualizado.");
-        
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+
+        log_acao("Operador ID " . $id_usuario . " (Nome: " . htmlspecialchars($nome) . ") editado por " . $_SESSION['username'] . " (" . $role_logado . ")");
+
+        // Redireciona de volta para a lista com sucesso
         header('Location: manage_users.php?status=updated');
         exit;
 
-    } catch (Exception $e) {
-        log_action($pdo, 'ERROR_UPDATE', "Falha ao editar usuário (ID: $id_usuario): " . $e->getMessage());
-        echo "Erro ao atualizar usuário: " . $e->getMessage();
+    } catch (PDOException $e) {
+        log_acao("Erro PDO ao editar operador ID " . $id_usuario . ": " . $e->getMessage());
+        header('Location: ' . $redirect_url . '&status=error_db');
+        exit;
     }
 } else {
     header('Location: manage_users.php');

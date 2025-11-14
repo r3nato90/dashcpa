@@ -1,67 +1,59 @@
 <?php
 session_start();
 include('config/db.php');
-include('config/logger.php'); // Incluído
+date_default_timezone_set('America/Sao_Paulo'); 
+include('config/logger.php');
 
-// Apenas Gerentes (todos os níveis) podem apagar
+// Verificação de segurança: Apenas Super Admin, Admin e Sub-Admin podem apagar
 if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['super_adm', 'admin', 'sub_adm'])) {
     header('Location: login.php');
     exit;
 }
+$role_logado = $_SESSION['role'];
+$id_logado = $_SESSION['user_id'];
+$id_usuario_delete = $_GET['id'] ?? null;
 
-$role = $_SESSION['role'];
-$id_logado = $_SESSION['id'];
-
-if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
+if (!$id_usuario_delete) {
     header('Location: manage_users.php');
     exit;
 }
 
-$id_usuario = (int)$_GET['id'];
-
 try {
-    // --- Lógica de Segurança ---
-    $query_check = "SELECT nome, id_sub_adm FROM usuarios WHERE id_usuario = ?";
-    $stmt_check = $pdo->prepare($query_check);
-    $stmt_check->execute([$id_usuario]);
-    $user = $stmt_check->fetch();
-    $nome_usuario_apagado = $user['nome'] ?? 'ID ' . $id_usuario;
+    // 1. Buscar dados do usuário a ser apagado e verificar permissão
+    $stmt_check = $pdo->prepare("SELECT nome, manager_id FROM usuarios WHERE id = ? AND role = 'usuario'");
+    $stmt_check->execute([$id_usuario_delete]);
+    $usuario_delete_data = $stmt_check->fetch(PDO::FETCH_ASSOC);
+    $nome_usuario = $usuario_delete_data['nome'] ?? 'ID ' . $id_usuario_delete;
 
-    if (!$user) {
-        throw new Exception("Usuário (ID: $id_usuario) não encontrado.");
+    if (!$usuario_delete_data) {
+        header('Location: manage_users.php?status=error_not_found');
+        exit;
     }
 
-    // Se for Admin/Sub-Admin, verifica se o usuário é dele
-    if ($role != 'super_adm' && $user['id_sub_adm'] != $id_logado) {
-        throw new Exception("Permissão negada. Você não pode apagar um usuário que não é seu (ID: $id_usuario).");
+    // Se não for super_adm, verifica se é o manager do usuário
+    if ($role_logado != 'super_adm' && $usuario_delete_data['manager_id'] != $id_logado) {
+        log_acao("Acesso negado (exclusão): Usuário ID " . $id_logado . " tentou apagar operador ID " . $id_usuario_delete);
+        header('Location: manage_users.php?status=error_permission');
+        exit;
     }
     
-    // --- Início da Transação de Exclusão ---
-    $pdo->beginTransaction();
+    // 2. Excluir os relatórios associados (CASCADE ou DELETE manual)
+    // Se o banco de dados não tiver CASCADE ON DELETE configurado:
+    // $stmt_delete_reports = $pdo->prepare("DELETE FROM relatorios WHERE id_usuario = ?");
+    // $stmt_delete_reports->execute([$id_usuario_delete]);
+    
+    // 3. Excluir o usuário
+    $stmt_delete_user = $pdo->prepare("DELETE FROM usuarios WHERE id = ?");
+    $stmt_delete_user->execute([$id_usuario_delete]);
+    
+    log_acao("Operador " . $nome_usuario . " (ID " . $id_usuario_delete . ") apagado por " . $_SESSION['username'] . " (" . $role_logado . ")");
 
-    // 1. Desvincular relatórios (define id_usuario como NULL)
-    $stmt_rel = $pdo->prepare("UPDATE relatorios SET id_usuario = NULL WHERE id_usuario = ?");
-    $stmt_rel->execute([$id_usuario]);
-
-    // 2. Desvincular transações (define id_usuario como NULL)
-    $stmt_trans = $pdo->prepare("UPDATE transacoes SET id_usuario = NULL WHERE id_usuario = ?");
-    $stmt_trans->execute([$id_usuario]);
-
-    // 3. Apagar o usuário
-    $stmt_del = $pdo->prepare("DELETE FROM usuarios WHERE id_usuario = ?");
-    $stmt_del->execute([$id_usuario]);
-
-    // 4. Confirmar a transação
-    $pdo->commit();
-
-    log_action($pdo, 'USER_DELETE', "Usuário '{$nome_usuario_apagado}' (ID: $id_usuario) foi permanentemente apagado.");
     header('Location: manage_users.php?status=deleted');
     exit;
 
-} catch (Exception $e) {
-    $pdo->rollBack();
-    log_action($pdo, 'ERROR_DELETE', "Falha ao apagar usuário (ID: $id_usuario): " . $e->getMessage());
-    header('Location: manage_users.php?status=error_delete&msg=' . urlencode($e->getMessage()));
+} catch (PDOException $e) {
+    log_acao("Erro PDO ao apagar operador ID " . $id_usuario_delete . ": " . $e->getMessage());
+    header('Location: manage_users.php?status=error_db');
     exit;
 }
 ?>

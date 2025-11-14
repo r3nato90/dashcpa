@@ -1,59 +1,43 @@
 <?php
 session_start();
 include('config/db.php');
-include('config/logger.php'); // Inclui o logger
+date_default_timezone_set('America/Sao_Paulo'); 
+include('config/logger.php');
 
-// Apenas Gerentes (todos os níveis) podem apagar
-if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['super_adm', 'admin', 'sub_adm'])) {
+// Verificação de segurança: Apenas operadores (usuario) podem apagar suas transações.
+if (!isset($_SESSION['role']) || $_SESSION['role'] != 'usuario') {
     header('Location: login.php');
     exit;
 }
+$id_usuario_logado = $_SESSION['user_id'];
+$id_relatorio = $_GET['id'] ?? null;
 
-$role = $_SESSION['role'];
-$id_logado = $_SESSION['id'];
-
-// 1. Validar ID do relatório
-if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
-    header('Location: reports.php?status=error_invalid_id');
+if (!$id_relatorio) {
+    header('Location: dashboard_usuario.php');
     exit;
 }
-$id_relatorio = (int)$_GET['id'];
 
 try {
-    // 2. Buscar o relatório e verificar permissão
-    $stmt_check = $pdo->prepare("
-        SELECT r.id_usuario, u.nome AS nome_usuario, u.id_sub_adm 
-        FROM relatorios r
-        JOIN usuarios u ON r.id_usuario = u.id_usuario
-        WHERE r.id_relatorio = ?
-    ");
-    $stmt_check->execute([$id_relatorio]);
-    $report_data = $stmt_check->fetch();
-
-    if (!$report_data) {
-        throw new Exception("Relatório (ID: $id_relatorio) não encontrado.");
+    // Verifica se a transação pertence ao usuário logado (segurança)
+    $stmt_check = $pdo->prepare("SELECT id_relatorio FROM relatorios WHERE id_relatorio = ? AND id_usuario = ?");
+    $stmt_check->execute([$id_relatorio, $id_usuario_logado]);
+    
+    if ($stmt_check->rowCount() > 0) {
+        // Excluir a transação
+        $stmt_delete = $pdo->prepare("DELETE FROM relatorios WHERE id_relatorio = ?");
+        $stmt_delete->execute([$id_relatorio]);
+        
+        log_acao("Transação ID " . $id_relatorio . " apagada pelo usuário ID: " . $id_usuario_logado);
+        header('Location: dashboard_usuario.php?status=success_deleted');
+        exit;
+    } else {
+        log_acao("Erro de segurança: Tentativa de apagar transação de ID inválido ou não pertencente ao usuário ID: " . $id_usuario_logado);
+        header('Location: dashboard_usuario.php?status=error_security');
+        exit;
     }
-
-    // Se não for Super Admin, verifica se o relatório pertence a ele
-    if ($role != 'super_adm' && $report_data['id_sub_adm'] != $id_logado) {
-        throw new Exception("Permissão negada para apagar este relatório (ID: $id_relatorio).");
-    }
-
-    // 3. Apagar o registro do relatório
-    $stmt_delete = $pdo->prepare("DELETE FROM relatorios WHERE id_relatorio = ?");
-    $stmt_delete->execute([$id_relatorio]);
-
-    // 4. Registrar no Log
-    $nome_usuario_relatorio = $report_data['nome_usuario'] ?? 'ID ' . $report_data['id_usuario'];
-    log_action($pdo, 'REPORT_ENTRY_DELETE', "Linha de relatório (ID: $id_relatorio) do usuário '{$nome_usuario_relatorio}' foi apagada.");
-
-    // 5. Redirecionar de volta para a página de relatórios com sucesso
-    header('Location: reports.php?status=report_deleted');
-    exit;
-
-} catch (Exception $e) {
-    log_action($pdo, 'ERROR_REPORT_DELETE', "Falha ao apagar linha de relatório (ID: $id_relatorio): " . $e->getMessage());
-    header('Location: reports.php?status=error_delete');
+} catch (PDOException $e) {
+    log_acao("Erro PDO ao apagar transação ID " . $id_relatorio . ": " . $e->getMessage());
+    header('Location: dashboard_usuario.php?status=error_delete');
     exit;
 }
 ?>

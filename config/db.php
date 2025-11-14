@@ -1,25 +1,24 @@
 <?php
-// Carregar variáveis de ambiente
-$host = getenv('DB_HOST') ?: 'localhost';
-$port = getenv('DB_PORT') ?: '3306';
-$dbname = getenv('DB_DATABASE') ?: 'u864690811_sistema_novo1';
-$username = getenv('DB_USERNAME') ?: 'u864690811_sistema_novo1';
-$password = getenv('DB_PASSWORD') ?: '&vOhKV9B4R';
+// Configurações do Banco de Dados (PDO - MySQL)
+$host = 'localhost'; // Host do banco de dados
+$db   = 'u864690811_sistema_novo1'; // Nome do banco de dados
+$user = 'u864690811_sistema_novo1'; // Usuário do banco de dados
+$pass = '&vOhKV9B4R'; // Senha do banco de dados
+$charset = 'utf8mb4';
 
-// **** NOVAS CONSTANTES DE COMISSÃO (HIERARQUIA DE 3 NÍVEIS) ****
-define('ADMIN_PRINCIPAL_ID', 1); // ID do "Douglas" (ou seu admin principal, `role` = 'admin')
-define('COMISSAO_ADMIN_PCT', 0.50);     // 50% para o Administrador
-define('COMISSAO_GERENTE_PCT', 0.10);   // 10% para o Gerente (sub_adm)
-define('COMISSAO_OPERADOR_PCT', 0.40);  // 40% para o Operador (usuario)
-
-// URL Base do site (para links de registro)
-$site_url = "https://dashcpa.com.br"; // Substitua pela sua URL real
+$dsn = "mysql:host=$host;dbname=$db;charset=$charset";
+$options = [
+    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    PDO::ATTR_EMULATE_PREPARES   => false,
+];
 
 try {
-    $pdo = new PDO("mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4", $username, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-} catch (PDOException $e) {
-    echo "Erro ao conectar ao banco de dados: " . $e->getMessage();
-    exit;
+    $pdo = new PDO($dsn, $user, $pass, $options);
+} catch (\PDOException $e) {
+    // Em um ambiente de produção, registre o erro em um log em vez de exibi-lo
+    // Exibição amigável para o usuário final
+    die("Erro de conexão com o banco de dados: " . $e->getMessage());
+    // Se quiser ver o erro detalhado para debug: die($e->getMessage());
 }
 ?>

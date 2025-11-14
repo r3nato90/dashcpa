@@ -1,88 +1,120 @@
 <?php
 session_start();
 include('config/db.php');
-date_default_timezone_set('America/Sao_Paulo'); // Garante fuso horário
+date_default_timezone_set('America/Sao_Paulo'); 
+include('config/logger.php');
 
-// Apenas 'super_adm' pode ver esta página
+$page_title = "Logs do Sistema";
+$breadcrumb_active = "Logs";
+
+// Verificação de segurança: Apenas Super Admin pode acessar os logs
 if (!isset($_SESSION['role']) || $_SESSION['role'] != 'super_adm') {
     header('Location: login.php');
     exit;
 }
 
-// --- Lógica do Filtro de Data ---
-$date_filter = date('Y-m-d'); // Padrão: hoje
+// --- Filtragem ---
+$date_filter = $_GET['date'] ?? date('Y-m-d');
+$role_filter = $_GET['role'] ?? ''; // Filtro por papel
 
-if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['date_filter'])) {
-    $date_filter = $_POST['date_filter'];
+// --- Query de Logs ---
+$query = "SELECT * FROM logs WHERE DATE(timestamp) = ?";
+$params = [$date_filter];
+
+if (!empty($role_filter)) {
+    $query .= " AND user_role = ?";
+    $params[] = $role_filter;
 }
 
-// Buscar logs do dia selecionado
-$stmt_logs = $pdo->prepare("
-    SELECT * FROM logs 
-    WHERE DATE(data) = ? 
-    ORDER BY data DESC
-");
-$stmt_logs->execute([$date_filter]);
-$logs = $stmt_logs->fetchAll();
+$query .= " ORDER BY timestamp DESC";
+$stmt_logs = $pdo->prepare($query);
+$stmt_logs->execute($params);
+$logs = $stmt_logs->fetchAll(PDO::FETCH_ASSOC);
 
-include('templates/header.php'); // Inclui o novo header (sidebar)
+// Opções de Papel para o filtro
+$role_options = ['super_adm', 'admin', 'sub_adm', 'usuario', 'visitante'];
+
+include('header.php'); 
 ?>
 
-<div class="container-fluid"> <div class="row">
-        <div class="col-12">
-            <h2>Registro de Atividades Diárias</h2>
-            <p>Selecione uma data para ver todas as atividades registradas no sistema.</p>
+<h2 class="mb-4">Logs de Atividade do Sistema</h2>
 
-            <div class="card shadow-sm mb-4">
-                <div class="card-body">
-                    <form action="view_logs.php" method="POST" class="d-flex justify-content-start align-items-end">
-                        <div class="me-3">
-                            <label for="date_filter" class="form-label">Selecionar Data:</label>
-                            <input type="date" class="form-control" name="date_filter" value="<?php echo htmlspecialchars($date_filter); ?>" required>
-                        </div>
-                        <button type="submit" class="btn btn-primary">Filtrar</Logs</button>
-                    </form>
+<!-- Card de Filtros -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-light">
+        <h5 class="mb-0">Filtros de Logs</h5>
+    </div>
+    <div class="card-body">
+        <form id="filterLogsForm" method="GET" action="view_logs.php">
+            <div class="row g-3 align-items-end">
+                <!-- Filtro de Data -->
+                <div class="col-md-4">
+                    <label for="date_filter" class="form-label">Data</label>
+                    <input type="date" class="form-control" id="date_filter" name="date" value="<?php echo htmlspecialchars($date_filter); ?>" required>
+                </div>
+
+                <!-- Filtro de Papel -->
+                <div class="col-md-4">
+                    <label for="role_filter" class="form-label">Filtrar por Papel</label>
+                    <select class="form-select" id="role_filter" name="role">
+                        <option value="">Todos os Papéis</option>
+                        <?php foreach ($role_options as $role_opt): ?>
+                            <option value="<?php echo $role_opt; ?>" 
+                                    <?php echo ($role_filter == $role_opt) ? 'selected' : ''; ?>>
+                                <?php echo strtoupper(str_replace('_', ' ', $role_opt)); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <!-- Botão de Filtrar -->
+                <div class="col-md-4">
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="fas fa-search me-2"></i> Filtrar Logs
+                    </button>
                 </div>
             </div>
-
-            <div class="card shadow-sm">
-                <div class="card-header">
-                    Logs de <?php echo date('d/m/Y', strtotime($date_filter)); ?>
-                </div>
-                <div class="card-body">
-                    <div class="table-responsive" style="max-height: 70vh; overflow-y: auto;">
-                        <table class="table table-striped table-hover table-sm">
-                            <thead class="table-dark sticky-top">
-                                <tr>
-                                    <th>Data / Hora</th>
-                                    <th>Usuário da Ação</th>
-                                    <th>Role</th>
-                                    <th>Tipo de Ação</th>
-                                    <th>Descrição Detalhada</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php if (empty($logs)): ?>
-                                    <tr>
-                                        <td colspan="5" class="text-center">Nenhum log encontrado para esta data.</td>
-                                    </tr>
-                                <?php endif; ?>
-                                <?php foreach ($logs as $log) : ?>
-                                <tr>
-                                    <td><?php echo date('d/m/Y H:i:s', strtotime($log['data'])); ?></td>
-                                    <td><?php echo htmlspecialchars($log['nome_usuario_acao']); ?> (ID: <?php echo $log['id_usuario_acao'] ?? 'N/A'; ?>)</td>
-                                    <td><?php echo htmlspecialchars($log['role_usuario_acao']); ?></td>
-                                    <td><span class="badge bg-secondary"><?php echo htmlspecialchars($log['acao_tipo']); ?></span></td>
-                                    <td><?php echo htmlspecialchars($log['descricao']); ?></td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </div>
+        </form>
     </div>
 </div>
 
-<?php include('templates/footer.php'); // Inclui o novo footer ?>
+<!-- Tabela de Logs -->
+<div class="card shadow-sm">
+    <div class="card-header">
+        <h5 class="mb-0">Registros de Logs para <?php echo date('d/m/Y', strtotime($date_filter)); ?> (<?php echo count($logs); ?> Registros)</h5>
+    </div>
+    <div class="card-body table-responsive" style="max-height: 600px; overflow-y: auto;">
+        <?php if (empty($logs)): ?>
+            <div class="alert alert-warning text-center">Nenhum log encontrado com os filtros selecionados.</div>
+        <?php else: ?>
+        <table class="table table-striped table-hover table-sm">
+            <thead class="table-dark sticky-top" style="z-index: 1;">
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Ação</th>
+                    <th>Usuário ID</th>
+                    <th>Papel</th>
+                    <th>IP</th>
+                    <th>User Agent</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($logs as $log): ?>
+                <tr>
+                    <td><?php echo date('d/m/Y H:i:s', strtotime($log['timestamp'])); ?></td>
+                    <td><?php echo htmlspecialchars($log['acao']); ?></td>
+                    <td><?php echo htmlspecialchars($log['user_id'] ?? 'N/A'); ?></td>
+                    <td><span class="badge bg-secondary"><?php echo strtoupper(str_replace('_', ' ', htmlspecialchars($log['user_role']))); ?></span></td>
+                    <td><?php echo htmlspecialchars($log['ip_address']); ?></td>
+                    <td title="<?php echo htmlspecialchars($log['user_agent']); ?>">
+                        <?php echo htmlspecialchars(substr($log['user_agent'], 0, 50)) . '...'; ?>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+        <?php endif; ?>
+    </div>
+</div>
+
+<?php include('footer.php'); ?>
