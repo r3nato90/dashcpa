@@ -4,11 +4,14 @@ if (session_status() == PHP_SESSION_NONE) {
     session_start();
 }
 // Inclui o arquivo de conexão e o logger, se ainda não estiverem incluídos
+// (Estes são fallbacks, o script principal deve tê-los incluído)
 if (!isset($pdo)) {
-    include('db.php');
+    // --- CORREÇÃO 4: O caminho deve ser relativo à RAIZ (/public_html/)
+    include('config/db.php');
 }
 if (!function_exists('log_acao')) {
-    include('logger.php');
+    // --- CORREÇÃO 5: O caminho deve ser relativo à RAIZ (/public_html/)
+    include('config/logger.php');
 }
 
 // Verifica se o usuário está logado e define o papel para o menu
@@ -30,9 +33,7 @@ if (isset($page_title)) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?php echo $title; ?></title>
-    <!-- Incluindo Bootstrap CSS (CDN) -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" xintegrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
-    <!-- Incluindo Font Awesome (Ícones) -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" xintegrity="sha512-SnH5WK+bZxgPHs44uWIX+LLMDJg1iIN50xT5Zux0795K6t20f7NOfXf7sB9+74f00G6S/v2l7nI6zX7E7/h12g==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <style>
         .sidebar {
@@ -73,7 +74,6 @@ if (isset($page_title)) {
 </head>
 <body>
     <div class="d-flex">
-        <!-- Sidebar -->
         <div class="sidebar d-flex flex-column p-3">
             <h2 class="text-white mb-4">DashCPA</h2>
             <ul class="nav nav-pills flex-column mb-auto">
@@ -159,7 +159,6 @@ if (isset($page_title)) {
                 <small class="text-muted">Usuário: <?php echo $username; ?> (<?php echo strtoupper(str_replace('_', ' ', $user_role)); ?>)</small>
             </div>
         </div>
-        <!-- Conteúdo Principal -->
         <div class="content flex-grow-1">
             <header class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom">
                 <h1 class="h3 mb-0"><?php echo isset($page_title) ? $page_title : 'Dashboard'; ?></h1>

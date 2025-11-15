@@ -1,9 +1,17 @@
 <?php
-// Configurações do Banco de Dados (PDO - MySQL)
-$host = 'localhost'; // Host do banco de dados
-$db   = 'u864690811_sistema_novo1'; // Nome do banco de dados
-$user = 'u864690811_sistema_novo1'; // Usuário do banco de dados
-$pass = '&vOhKV9B4R'; // Senha do banco de dados
+// /config/db.php
+// Garante que o vendor/autoload.php seja encontrado a partir da raiz
+require_once __DIR__ . '/../vendor/autoload.php';
+
+// Carrega as variáveis de ambiente do .env que está na raiz
+// __DIR__ é a pasta atual (/config), '..' sobe para a raiz (/public_html)
+$dotenv = Dotenv\Dotenv::createImmutable(__DIR__ . '/..'); 
+$dotenv->load();
+
+$host = $_ENV['DB_HOST'];
+$db   = $_ENV['DB_DATABASE'];
+$user = $_ENV['DB_USERNAME'];
+$pass = $_ENV['DB_PASSWORD'];
 $charset = 'utf8mb4';
 
 $dsn = "mysql:host=$host;dbname=$db;charset=$charset";
@@ -14,11 +22,13 @@ $options = [
 ];
 
 try {
-    $pdo = new PDO($dsn, $user, $pass, $options);
+     $pdo = new PDO($dsn, $user, $pass, $options);
 } catch (\PDOException $e) {
-    // Em um ambiente de produção, registre o erro em um log em vez de exibi-lo
-    // Exibição amigável para o usuário final
-    die("Erro de conexão com o banco de dados: " . $e->getMessage());
-    // Se quiser ver o erro detalhado para debug: die($e->getMessage());
+     // Em caso de falha, loga o erro e exibe uma mensagem genérica
+     // Verifique o log de erros do seu servidor para ver a mensagem completa
+     error_log("Erro de conexão com o banco de dados: " . $e->getMessage());
+     
+     // Mensagem de erro genérica para o usuário
+     die("Erro 500: Falha interna ao conectar com o servidor. (DB)"); 
 }
 ?>

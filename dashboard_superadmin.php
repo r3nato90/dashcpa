@@ -1,6 +1,7 @@
 <?php
 session_start();
-include('config/db.php');
+// Estes includes estão CORRETOS, pois o dashboard_superadmin.php está na raiz.
+include('config/db.php'); 
 date_default_timezone_set('America/Sao_Paulo'); 
 include('config/logger.php');
 
@@ -23,6 +24,7 @@ if (isset($_GET['status'])) {
 }
 
 // --- QUERIES PARA OS CARDS DE ESTATÍSTICAS (KPIs) ---
+// $pdo já foi carregado acima, então estas queries funcionam.
 $stmt_total_users = $pdo->query("SELECT COUNT(*) FROM usuarios WHERE role = 'usuario'");
 $total_users = $stmt_total_users->fetchColumn();
 
@@ -150,14 +152,13 @@ $data_gastos_numeros = array_reverse($data_gastos_numeros);
 $data_gastos_proxy_json = json_encode($data_gastos_proxy);
 $data_gastos_numeros_json = json_encode($data_gastos_numeros);
 
-include('header.php'); 
+// ### CORREÇÃO 1: Adicionar a pasta 'templates/' ao caminho ###
+include('templates/header.php'); 
 ?>
 
 <h2 class="mb-4">Visão Geral do Sistema</h2>
 
-<!-- Linha de KPIs -->
 <div class="row">
-    <!-- Lucro Bruto Total -->
     <div class="col-md-6 col-lg-3 mb-4">
         <div class="card bg-primary text-white shadow-sm">
             <div class="card-body">
@@ -172,7 +173,6 @@ include('header.php');
         </div>
     </div>
 
-    <!-- Lucro Líquido Sistema (50%) -->
     <div class="col-md-6 col-lg-3 mb-4">
         <div class="card bg-success text-white shadow-sm">
             <div class="card-body">
@@ -187,7 +187,6 @@ include('header.php');
         </div>
     </div>
 
-    <!-- Total de Gerentes -->
     <div class="col-md-6 col-lg-3 mb-4">
         <div class="card bg-warning text-dark shadow-sm">
             <div class="card-body">
@@ -202,7 +201,6 @@ include('header.php');
         </div>
     </div>
 
-    <!-- Total de Operadores -->
     <div class="col-md-6 col-lg-3 mb-4">
         <div class="card bg-info text-white shadow-sm">
             <div class="card-body">
@@ -218,9 +216,7 @@ include('header.php');
     </div>
 </div>
 
-<!-- Gráficos -->
 <div class="row">
-    <!-- Gráfico 1: Lucro Diário (Últimos 7 dias) -->
     <div class="col-lg-8 mb-4">
         <div class="card shadow-sm h-100">
             <div class="card-header">
@@ -234,7 +230,6 @@ include('header.php');
         </div>
     </div>
 
-    <!-- Gráfico 2: Distribuição de Comissão -->
     <div class="col-lg-4 mb-4">
         <div class="card shadow-sm h-100">
             <div class="card-header">
@@ -252,9 +247,7 @@ include('header.php');
     </div>
 </div>
 
-<!-- Tabela de Ranking e Despesas -->
 <div class="row">
-    <!-- Ranking dos Gerentes -->
     <div class="col-lg-6 mb-4">
         <div class="card shadow-sm h-100">
             <div class="card-header">
@@ -286,8 +279,7 @@ include('header.php');
         </div>
     </div>
     
-    <!-- Despesas Diárias Globais -->
-     <div class="col-lg-6 mb-4">
+    <div class="col-lg-6 mb-4">
         <div class="card shadow-sm h-100">
             <div class="card-header">
                 <h5 class="mb-0">Despesas Operacionais (Últimos 7 dias)</h5>
@@ -469,5 +461,6 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>
 
 <?php 
-include('footer.php');
+// ### CORREÇÃO 2: Adicionar a pasta 'templates/' ao caminho ###
+include('templates/footer.php');
 ?>
