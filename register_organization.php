@@ -27,6 +27,7 @@ $payment_link = $plan['mercadopago_link'];
 // Lógica de processamento do formulário
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $org_name = $_POST['org_name'];
+    $cpf_cnpj = $_POST['cpf_cnpj']; // **** NOVO CAMPO ****
     $admin_name = $_POST['admin_name'];
     $admin_email = $_POST['admin_email'];
     $admin_username = $_POST['admin_username'];
@@ -48,11 +49,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         $pdo->beginTransaction();
 
         // 3. Criar a Organização (Cliente) com status 'inactive'
+        // **** MODIFICADO: Adicionado cpf_cnpj ****
         $stmt_org = $pdo->prepare("
-            INSERT INTO organizations (org_name, plan_type, max_admins, max_users, status) 
-            VALUES (?, ?, ?, ?, 'inactive')
+            INSERT INTO organizations (org_name, cpf_cnpj, plan_type, max_admins, max_users, status) 
+            VALUES (?, ?, ?, ?, ?, 'inactive')
         ");
-        $stmt_org->execute([$org_name, $plan_type, $max_admins, $max_users]);
+        $stmt_org->execute([$org_name, $cpf_cnpj, $plan_type, $max_admins, $max_users]);
         $org_id = $pdo->lastInsertId();
 
         // 4. Criar a conta do Super Admin
@@ -61,6 +63,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             VALUES (?, ?, ?, ?, ?, 'super_adm', 0)
         ");
         $stmt_admin->execute([$org_id, $admin_name, $admin_email, $admin_username, $admin_password]);
+        $super_admin_id = $pdo->lastInsertId(); // Pega o ID do Super Admin recém-criado
+        
+        // **** NOVO: Atualiza a organização com o ID do Super Admin ****
+        $stmt_update_org = $pdo->prepare("UPDATE organizations SET super_admin_id = ? WHERE org_id = ?");
+        $stmt_update_org->execute([$super_admin_id, $org_id]);
         
         $pdo->commit();
 
@@ -105,6 +112,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     <fieldset class="border p-3 rounded mb-3">
                         <legend classs="float-none w-auto px-2 fs-6" style="font-size: 1rem; font-weight: 600;">Sobre sua Empresa</legend>
                         <div class="mb-3"><label for="org_name" class="form-label">Nome da Empresa</label><input type="text" class="form-control" name="org_name" required></div>
+                        <div class="mb-3"><label for="cpf_cnpj" class="form-label">CPF / CNPJ</label><input type="text" class="form-control" name="cpf_cnpj"></div>
                     </fieldset>
                     
                     <fieldset class="border p-3 rounded mb-3">

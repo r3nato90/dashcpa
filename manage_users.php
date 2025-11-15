@@ -3,7 +3,6 @@ session_start();
 include('config/db.php');
 date_default_timezone_set('America/Sao_Paulo');
 
-// **** VERIFICAÇÃO MULTI-TENANT ****
 if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['super_adm', 'admin', 'sub_adm']) || !isset($_SESSION['org_id'])) {
     header('Location: login.php');
     exit;
@@ -11,16 +10,15 @@ if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['super_adm', 'adm
 $role = $_SESSION['role'];
 $id_logado = $_SESSION['id'];
 $org_id = $_SESSION['org_id'];
-// **** FIM DA VERIFICAÇÃO ****
 
-include('templates/header.php');
+include('templates/header.php'); 
 
 if (isset($_GET['status'])) {
     if ($_GET['status'] == 'updated') echo "<div class='container-fluid'><div class='alert alert-success'>Usuário atualizado!</div></div>";
     if ($_GET['status'] == 'deleted') echo "<div class='container-fluid'><div class='alert alert-success'>Usuário apagado!</div></div>";
 }
 
-// **** MODIFICADO: Query DENTRO da organização ****
+// **** CORREÇÃO DA QUERY (Hierarquia N1->N2->N3) ****
 $query = "
     SELECT u.*, s.nome AS nome_sub_adm 
     FROM usuarios u
@@ -29,10 +27,18 @@ $query = "
 ";
 $params = [$org_id];
 
-if ($role == 'admin' || $role == 'sub_adm') {
+if ($role == 'admin') {
+    // Admin (N1) vê usuários (N3) vinculados aos seus Sub-Admins (N2) OU a ele mesmo
+    $query .= " AND (u.id_sub_adm = ? OR s.parent_admin_id = ?)";
+    $params[] = $id_logado;
+    $params[] = $id_logado;
+} elseif ($role == 'sub_adm') {
+    // Sub-Adm (N2) vê usuários (N3) vinculados a ele
     $query .= " AND u.id_sub_adm = ?";
     $params[] = $id_logado;
 }
+// Super-Admin (Dono) vê todos
+
 $query .= " ORDER BY u.nome";
 $stmt = $pdo->prepare($query);
 $stmt->execute($params);
@@ -47,7 +53,7 @@ $usuarios = $stmt->fetchAll();
             <table class="table table-striped table-hover">
                 <thead>
                     <tr>
-                        <th>Nome</th> <th>Email</th> <th>Comissão (%)</th> <th>Vinculado a</th> <th>Ações</th>
+                        <th>Nome</th> <th>Email</th> <th>Comissão (%)</th> <th>Vinculado a (Gerente)</th> <th>Ações</th>
                     </tr>
                 </thead>
                 <tbody>

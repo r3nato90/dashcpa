@@ -11,20 +11,21 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] != 'platform_owner') {
 }
 
 // --- 1. BUSCAR TODAS AS ORGANIZAÇÕES (Clientes) ---
+// **** MODIFICADO: Adicionado LEFT JOIN para buscar o nome do Super Admin (Responsável) ****
 $stmt_orgs = $pdo->query("
     SELECT 
         o.*, 
         (SELECT COUNT(*) FROM usuarios WHERE org_id = o.org_id) as current_users,
-        (SELECT COUNT(*) FROM sub_administradores WHERE org_id = o.org_id AND role IN ('admin', 'sub_adm')) as current_admins
+        (SELECT COUNT(*) FROM sub_administradores WHERE org_id = o.org_id AND role IN ('admin', 'sub_adm')) as current_admins,
+        s.nome AS super_admin_nome, 
+        s.email AS super_admin_email
     FROM organizations o
+    LEFT JOIN sub_administradores s ON o.super_admin_id = s.id_sub_adm
     ORDER BY o.org_name
 ");
 $organizations = $stmt_orgs->fetchAll();
 
-// --- 2. BUSCAR TODOS OS USUÁRIOS (Operadores) E GERENTES (Admins/Sub-Admins) ---
-// (Agrupados por org_id para fácil consulta no loop)
-
-// Operadores
+// --- 2. BUSCAR USUÁRIOS E GERENTES (Para os Detalhes) ---
 $stmt_users = $pdo->query("SELECT id_usuario, org_id, nome, email FROM usuarios ORDER BY nome");
 $users_list = $stmt_users->fetchAll();
 $users_by_org = [];
@@ -32,7 +33,6 @@ foreach ($users_list as $user) {
     $users_by_org[$user['org_id']][] = $user;
 }
 
-// Gerentes
 $stmt_admins = $pdo->query("SELECT id_sub_adm, org_id, nome, email, role FROM sub_administradores WHERE role IN ('admin', 'sub_adm', 'super_adm') ORDER BY nome");
 $admins_list = $stmt_admins->fetchAll();
 $admins_by_org = [];
@@ -40,6 +40,16 @@ foreach ($admins_list as $admin) {
     if ($admin['role'] == 'platform_owner') continue;
     $admins_by_org[$admin['org_id']][] = $admin;
 }
+
+// --- 3. **** NOVO: Buscar Super Admins (Para o Dropdown do Modal) **** ---
+$stmt_super_admins = $pdo->query("
+    SELECT id_sub_adm, nome, email 
+    FROM sub_administradores 
+    WHERE role = 'super_adm' 
+    ORDER BY nome
+");
+$all_super_admins = $stmt_super_admins->fetchAll();
+
 
 include('templates/header-new.php'); 
 ?>
@@ -54,12 +64,17 @@ include('templates/header-new.php');
     </div>
 
     <?php
+    // Mensagens de status (incluindo as de exclusão)
     if (isset($_GET['status'])) {
         if ($_GET['status'] == 'org_created') echo "<div class='alert alert-success'>Organização criada com sucesso!</div>";
         if ($_GET['status'] == 'org_updated') echo "<div class='alert alert-success'>Organização atualizada com sucesso!</div>";
         if ($_GET['status'] == 'status_updated') echo "<div class='alert alert-success'>Status da organização atualizado!</div>";
         if ($_GET['status'] == 'user_updated') echo "<div class='alert alert-success'>Usuário atualizado/movido com sucesso!</div>";
         if ($_GET['status'] == 'error') echo "<div class='alert alert-danger'>Ocorreu um erro.</div>";
+        
+        if ($_GET['status'] == 'org_deleted') echo "<div class='alert alert-success'>Organização e todos os dados associados foram apagados com sucesso.</div>";
+        if ($_GET['status'] == 'error_self_delete') echo "<div class='alert alert-danger'>Erro: Você não pode apagar sua própria organização.</div>";
+        if ($_GET['status'] == 'error_delete_failed') echo "<div class='alert alert-danger'>Erro ao apagar a organização.</div>";
     }
     ?>
 
@@ -94,8 +109,11 @@ include('templates/header-new.php');
                         
                         <div class="mb-3">
                             <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" 
-                                    data-bs-target="#modalEditarOrg" data-org-id="<?php echo $org['org_id']; ?>"
+                                    data-bs-target="#modalEditarOrg" 
+                                    data-org-id="<?php echo $org['org_id']; ?>"
                                     data-org-name="<?php echo htmlspecialchars($org['org_name']); ?>"
+                                    data-org-cpf-cnpj="<?php echo htmlspecialchars($org['cpf_cnpj']); ?>"
+                                    data-org-super-admin-id="<?php echo $org['super_admin_id']; ?>"
                                     data-max-admins="<?php echo $org['max_admins']; ?>"
                                     data-max-users="<?php echo $org['max_users']; ?>">
                                 Editar Empresa/Limites
@@ -106,7 +124,24 @@ include('templates/header-new.php');
                                     data-org-status="<?php echo $org['status']; ?>">
                                 Editar Status (Pagamento)
                             </button>
+
+                            <?php 
+                            if ($org['org_id'] != $_SESSION['org_id']): 
+                            ?>
+                                <a href="platform_delete_org.php?id=<?php echo $org['org_id']; ?>" 
+                                   class="btn btn-danger btn-sm" 
+                                   onclick="return confirm('ATENÇÃO: Excluir a organização \'<?php echo htmlspecialchars(addslashes($org['org_name'])); ?>\' é IRREVERSÍVEL.\n\nTodos os dados desta empresa serão permanentemente apagados.\n\nDeseja continuar?');">
+                                    <i class="fas fa-trash-alt"></i> Excluir Empresa
+                                </a>
+                            <?php endif; ?>
                         </div>
+                        
+                        <?php if ($org['super_admin_nome']): ?>
+                        <div class="alert alert-light">
+                            <strong>Responsável (Super Admin):</strong> <?php echo htmlspecialchars($org['super_admin_nome']); ?><br>
+                            <strong>Email:</strong> <?php echo htmlspecialchars($org['super_admin_email']); ?>
+                        </div>
+                        <?php endif; ?>
 
                         <hr>
                         
@@ -190,6 +225,21 @@ include('templates/header-new.php');
                 <form action="platform_edit_org.php" method="POST">
                     <input type="hidden" id="editOrgId" name="org_id">
                     <div class="mb-3"><label for="org_name" class="form-label">Nome da Organização</label><input type="text" class="form-control" id="editOrgNameField" name="org_name" required></div>
+                    
+                    <div class="mb-3"><label for="cpf_cnpj" class="form-label">CPF / CNPJ</label><input type="text" class="form-control" id="editCpfCnpj" name="cpf_cnpj"></div>
+                    
+                    <div class="mb-3">
+                        <label for="super_admin_id" class="form-label">Responsável (Super Admin)</label>
+                        <select class="form-control" id="editSuperAdminId" name="super_admin_id">
+                            <option value="">Nenhum (Desvincular)</option>
+                            <?php foreach ($all_super_admins as $sa): ?>
+                                <option value="<?php echo $sa['id_sub_adm']; ?>">
+                                    <?php echo htmlspecialchars($sa['nome']); ?> (<?php echo htmlspecialchars($sa['email']); ?>)
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
                     <hr><p><strong>Limites do Plano:</strong></p>
                     <div class="row">
                         <div class="col-6"><label for="max_admins" class="form-label">Limite de Admins</label><input type="number" class="form-control" id="editMaxAdmins" name="max_admins" required></div>
@@ -238,26 +288,35 @@ document.addEventListener('DOMContentLoaded', function() {
     if (editModal) {
         editModal.addEventListener('show.bs.modal', function(event) {
             var button = event.relatedTarget;
+            // Pega os dados dos atributos data-*
             var orgId = button.getAttribute('data-org-id');
             var orgName = button.getAttribute('data-org-name');
+            var orgCpfCnpj = button.getAttribute('data-org-cpf-cnpj');
+            var orgSuperAdminId = button.getAttribute('data-org-super-admin-id');
             var maxAdmins = button.getAttribute('data-max-admins');
             var maxUsers = button.getAttribute('data-max-users');
             
+            // Busca os campos do modal
             var modalTitle = editModal.querySelector('.modal-title #editOrgNameTitle');
             var modalOrgIdInput = editModal.querySelector('.modal-body #editOrgId');
             var modalOrgNameInput = editModal.querySelector('.modal-body #editOrgNameField');
+            var modalCpfCnpjInput = editModal.querySelector('.modal-body #editCpfCnpj');
+            var modalSuperAdminInput = editModal.querySelector('.modal-body #editSuperAdminId');
             var modalMaxAdminsInput = editModal.querySelector('.modal-body #editMaxAdmins');
             var modalMaxUsersInput = editModal.querySelector('.modal-body #editMaxUsers');
             
+            // Preenche os campos do modal
             if (modalTitle) modalTitle.textContent = orgName;
             if (modalOrgIdInput) modalOrgIdInput.value = orgId;
             if (modalOrgNameInput) modalOrgNameInput.value = orgName;
+            if (modalCpfCnpjInput) modalCpfCnpjInput.value = orgCpfCnpj;
+            if (modalSuperAdminInput) modalSuperAdminInput.value = orgSuperAdminId;
             if (modalMaxAdminsInput) modalMaxAdminsInput.value = maxAdmins;
             if (modalMaxUsersInput) modalMaxUsersInput.value = maxUsers;
         });
     }
 
-    // Modal 2: Editar Status
+    // Modal 2: Editar Status (sem alterações)
     var statusModal = document.getElementById('modalEditarStatus');
     if (statusModal) {
         statusModal.addEventListener('show.bs.modal', function(event) {

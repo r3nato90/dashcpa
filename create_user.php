@@ -25,7 +25,7 @@ $plan = $stmt_plan->fetch();
 
 $limite_usuarios_atingido = ($plan['current_users'] >= $plan['max_users']);
 $limite_admins_atingido = ($plan['current_admins'] >= $plan['max_admins']);
-$form_disabled = false; // Trava o formulário
+$form_disabled = false; 
 // --- **** FIM DA VERIFICAÇÃO DE LIMITE **** ---
 
 
@@ -34,7 +34,6 @@ $message = "";
 if (isset($_GET['status'])) {
     if ($_GET['status'] == 'error_email') $message = "<div class='alert alert-danger'>Erro: Este Email já está em uso.</div>";
     if ($_GET['status'] == 'error_username') $message = "<div class='alert alert-danger'>Erro: Este Nome de Usuário já está em uso.</div>";
-    // Mensagens de limite vindas do process_create_user.php
     if ($_GET['status'] == 'limit_users') {
         $message = "<div class='alert alert-danger'>Você atingiu o limite de <strong>{$plan['max_users']}</strong> usuários (Operadores) do seu plano.</div>";
         $form_disabled = true;
@@ -45,13 +44,30 @@ if (isset($_GET['status'])) {
     }
 }
 
-// Carregar lista de gerentes (Apenas para Super Admin)
-$admins_list = [];
+// --- **** INÍCIO DA CORREÇÃO (Hierarquia N1/N2) **** ---
+
+// Carregar lista de gerentes para o dropdown "Vincular a"
+$dropdown_admins_list = [];
+
 if ($role == 'super_adm') {
-    $stmt_admins = $pdo->prepare("SELECT id_sub_adm, nome, role, username FROM sub_administradores WHERE org_id = ? AND role != 'super_adm' ORDER BY nome");
+    // Super-Admin (Dono) vê todos os Admins (N1) e Sub-Admins (N2)
+    $stmt_admins = $pdo->prepare("SELECT id_sub_adm, nome, role FROM sub_administradores WHERE org_id = ? AND role IN ('admin', 'sub_adm') ORDER BY nome");
     $stmt_admins->execute([$org_id]);
-    $admins_list = $stmt_admins->fetchAll();
+    $dropdown_admins_list = $stmt_admins->fetchAll();
+} 
+elseif ($role == 'admin') {
+    // Admin (N1) vê a si mesmo E seus Sub-Admins (N2)
+    $stmt_admins = $pdo->prepare("
+        SELECT id_sub_adm, nome, role FROM sub_administradores 
+        WHERE org_id = ? AND (id_sub_adm = ? OR parent_admin_id = ?)
+        ORDER BY nome
+    ");
+    $stmt_admins->execute([$org_id, $id_logado, $id_logado]);
+    $dropdown_admins_list = $stmt_admins->fetchAll();
 }
+// Sub-Adm (N2) não vê esta lista, ele só pode criar usuários (N3) vinculados a ele mesmo.
+
+// --- **** FIM DA CORREÇÃO **** ---
 
 include('templates/header.php');
 ?>
@@ -85,33 +101,35 @@ include('templates/header.php');
                             <div class="mb-3">
                                 <label for="tipo_conta" class="form-label">Tipo de Conta a Criar</label>
                                 <select class="form-control" name="tipo_conta" id="tipo_conta" <?php if ($form_disabled) echo 'disabled'; ?>>
-                                    <option value="usuario">Usuário (Operador)</option>
-                                    <option value="sub_adm">Sub-Administrador (Gerente)</option>
-                                    <option value="admin">Administrador (Gerente)</option>
+                                    <option value="usuario">Usuário (Operador N3)</option>
+                                    <option value="sub_adm">Sub-Administrador (Gerente N2)</option>
+                                    <option value="admin">Administrador (Gerente N1)</option>
                                 </select>
                             </div>
                         <?php elseif ($role == 'admin'): ?>
                             <div class="mb-3">
                                 <label for="tipo_conta" class="form-label">Tipo de Conta a Criar</label>
                                 <select class="form-control" name="tipo_conta" id="tipo_conta" <?php if ($form_disabled) echo 'disabled'; ?>>
-                                    <option value="usuario">Usuário (Operador)</option>
-                                    <option value="sub_adm">Sub-Administrador (Gerente)</option>
+                                    <option value="usuario">Usuário (Operador N3)</option>
+                                    <option value="sub_adm">Sub-Administrador (Gerente N2)</option>
                                 </select>
                             </div>
-                        <?php else: // Sub-Admin ?>
+                        <?php else: // Sub-Admin (N2) ?>
                             <input type="hidden" name="tipo_conta" value="usuario">
-                            <h5 class="text-center">Criando Novo Usuário (Operador)</h5>
+                            <h5 class="text-center">Criando Novo Usuário (Operador N3)</h5>
                             <?php if ($limite_usuarios_atingido) $form_disabled = true; ?>
                         <?php endif; ?>
                         <hr>
                         <div class="mb-3"><label for="nome" class="form-label">Nome Completo</label><input type="text" class="form-control" name="nome" required <?php if ($form_disabled) echo 'disabled'; ?>></div>
                         <div class="mb-3"><label for="email" class="form-label">Email</label><input type="email" class="form-control" name="email" required <?php if ($form_disabled) echo 'disabled'; ?>></div>
-                        <div class="mb-3" id="campo_comissao"><label for="percentual_comissao" class="form-label">Percentual de Comissão (%)</label><input type="number" step="0.01" class="form-control" name="percentual_comissao" value="25.00" required <?php if ($form_disabled) echo 'disabled'; ?>></div>
+                        <div class="mb-3" id="campo_comissao"><label for="percentual_comissao" class="form-label">Percentual de Comissão (%)</label><input type="number" step="0.01" class="form-control" name="percentual_comissao" value="40.00" required <?php if ($form_disabled) echo 'disabled'; ?>></div>
                         <div class="mb-3" id="campo_username" style="display: none;"><label for="username" class="form-label">Nome de Usuário (Username)</label><input type="text" class="form-control" name="username" placeholder="Ex: novogerente" <?php if ($form_disabled) echo 'disabled'; ?>></div>
-                        <div class="mb-3" id="campo_vinculo" style="display: none;"><label for="id_sub_adm" class="form-label">Vincular Usuário a (Gerente)</label>
+                        
+                        <div class="mb-3" id="campo_vinculo" style="display: none;">
+                            <label for="id_sub_adm" class="form-label">Vincular Usuário a (Gerente)</label>
                             <select class="form-control" name="id_sub_adm" <?php if ($form_disabled) echo 'disabled'; ?>>
                                 <option value="">Nenhum (Sem vínculo)</option>
-                                <?php foreach ($admins_list as $admin) echo "<option value='{$admin['id_sub_adm']}'>" . htmlspecialchars($admin['nome']) . " (" . $admin['username'] . ")</option>"; ?>
+                                <?php foreach ($dropdown_admins_list as $admin) echo "<option value='{$admin['id_sub_adm']}'>" . htmlspecialchars($admin['nome']) . " (" . $admin['role'] . ")</option>"; ?>
                             </select>
                         </div>
                         
@@ -129,17 +147,15 @@ include('templates/header.php');
 <script>
 $(document).ready(function() {
     var userRole = '<?php echo $role; ?>';
-    // Pega os limites do PHP
     var limite_usuarios_atingido = <?php echo json_encode($limite_usuarios_atingido); ?>;
     var limite_admins_atingido = <?php echo json_encode($limite_admins_atingido); ?>;
     var form_disabled = <?php echo json_encode($form_disabled); ?>;
 
     function toggleFields() {
-        if (form_disabled) return; // Se o formulário já estiver bloqueado, não faz nada
+        if (form_disabled) return; 
 
         var tipoConta = $('#tipo_conta').val();
 
-        // Reseta os campos
         $('#campo_username, #campo_vinculo').hide();
         $('#campo_username input').prop('required', false);
         $('#campo_comissao, #campo_comissao input').show().prop('required', true);
@@ -149,14 +165,17 @@ $(document).ready(function() {
             if (limite_usuarios_atingido) {
                 $('button[type="submit"]').prop('disabled', true).text('Limite de Usuários Atingido');
             }
-            if (userRole === 'super_adm') { $('#campo_vinculo').show(); }
+            // Apenas Super-Admin (Dono) e Admin (N1) veem o dropdown de vínculo
+            if (userRole === 'super_adm' || userRole === 'admin') { 
+                $('#campo_vinculo').show(); 
+            }
             
         } else if (tipoConta === 'admin' || tipoConta === 'sub_adm') {
             if (limite_admins_atingido) {
                 $('button[type="submit"]').prop('disabled', true).text('Limite de Gerentes Atingido');
             }
             $('#campo_username').show().prop('required', true);
-            $('#campo_vinculo').hide();
+            $('#campo_vinculo').hide(); // Vínculo de gerente (parent_id) é definido no backend
         }
     }
     toggleFields();

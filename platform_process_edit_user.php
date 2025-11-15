@@ -3,7 +3,6 @@ session_start();
 include('config/db.php');
 include('config/logger.php');
 
-// Verificação de segurança: Apenas 'platform_owner'
 if (!isset($_SESSION['role']) || $_SESSION['role'] != 'platform_owner') {
     header('Location: login.php');
     exit;
@@ -16,10 +15,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $nome = $_POST['nome'];
     $email = $_POST['email'];
     $senha = $_POST['senha'];
+    $percentual_comissao = $_POST['percentual_comissao']; // Adicionado
     $nova_org_id = (int)$_POST['org_id'];
+    
+    // **** MODIFICAÇÃO: Captura o ID do Sub-Admin ****
+    $id_sub_adm = (!empty($_POST['id_sub_adm'])) ? (int)$_POST['id_sub_adm'] : null;
 
     try {
-        // 2. Buscar o usuário e sua organização atual
         $stmt_user = $pdo->prepare("SELECT org_id FROM usuarios WHERE id_usuario = ?");
         $stmt_user->execute([$id_usuario]);
         $user = $stmt_user->fetch();
@@ -27,32 +29,26 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         if (!$user) {
             throw new Exception("Usuário não encontrado.");
         }
-        $antiga_org_id = $user['org_id'];
         
         // 3. Preparar a query de atualização
         $params_update = [];
-        $sql_update = "";
-        
-        // 4. Lógica de Vínculo: Se a Organização mudou, desvincula do gerente (seta id_sub_adm = NULL)
-        $id_sub_adm_sql_snippet = ($antiga_org_id != $nova_org_id) ? "id_sub_adm = NULL, " : "";
+        $sql_update_parts = ["nome = ?", "email = ?", "org_id = ?", "percentual_comissao = ?", "id_sub_adm = ?"];
+        $params_update = [$nome, $email, $nova_org_id, $percentual_comissao, $id_sub_adm];
 
         if (!empty($senha)) {
-            $sql_update = "UPDATE usuarios SET nome = ?, email = ?, senha = ?, org_id = ?, {$id_sub_adm_sql_snippet} data_atualizacao = NOW() WHERE id_usuario = ?";
-            $params_update = [$nome, $email, $senha, $nova_org_id, $id_usuario];
-        } else {
-            $sql_update = "UPDATE usuarios SET nome = ?, email = ?, org_id = ?, {$id_sub_adm_sql_snippet} data_atualizacao = NOW() WHERE id_usuario = ?";
-            $params_update = [$nome, $email, $nova_org_id, $id_usuario];
+            $sql_update_parts[] = "senha = ?";
+            $params_update[] = $senha;
         }
+        
+        // Adiciona o ID do usuário no final dos parâmetros
+        $params_update[] = $id_usuario;
+        
+        $sql_update = "UPDATE usuarios SET " . implode(", ", $sql_update_parts) . " WHERE id_usuario = ?";
         
         $stmt_update = $pdo->prepare($sql_update);
         $stmt_update->execute($params_update);
 
-        // 5. Log
-        $log_message = "Usuário '{$nome}' (ID: $id_usuario) foi atualizado.";
-        if ($antiga_org_id != $nova_org_id) {
-            $log_message .= " Usuário movido da Org ID: $antiga_org_id para a Org ID: $nova_org_id.";
-        }
-        log_action($pdo, 'USER_UPDATE_GLOBAL', $log_message);
+        log_action($pdo, 'USER_UPDATE_GLOBAL', "Usuário '{$nome}' (ID: $id_usuario) foi atualizado globalmente.");
         
         header('Location: platform_manage_users.php?status=user_updated');
         exit;

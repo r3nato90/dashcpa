@@ -3,29 +3,42 @@ session_start();
 include('config/db.php');
 date_default_timezone_set('America/Sao_Paulo');
 
-// **** VERIFICAÇÃO MULTI-TENANT ****
-if (!isset($_SESSION['role']) || $_SESSION['role'] != 'super_adm' || !isset($_SESSION['org_id'])) {
+// **** MODIFICAÇÃO: 'admin' (N1) também pode acessar ****
+if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['super_adm', 'admin']) || !isset($_SESSION['org_id'])) {
     header('Location: login.php');
     exit;
 }
 $org_id = $_SESSION['org_id'];
-// **** FIM DA VERIFICAÇÃO ****
+$role = $_SESSION['role'];
+$id_logado = $_SESSION['id'];
 
 include('templates/header.php');
 
 if (isset($_GET['status']) && $_GET['status'] == 'updated') {
-    echo "<div class='container-fluid'><div class='alert alert-success'>Gerente atualizado!</div></div>";
+    echo "<div class'container-fluid'><div class='alert alert-success'>Gerente atualizado!</div></div>";
 }
 
-// **** MODIFICADO: Busca DENTRO da organização e exclui 'super_adm' ****
-$stmt = $pdo->prepare("SELECT * FROM sub_administradores WHERE org_id = ? AND role != 'super_adm' ORDER BY nome");
-$stmt->execute([$org_id]);
+// **** CORREÇÃO DA QUERY (Hierarquia) ****
+$params = [$org_id];
+if ($role == 'super_adm') {
+    // Super-Admin (Dono) vê Admins (N1) e Sub-Admins (N2)
+    $query_sql = "SELECT * FROM sub_administradores WHERE org_id = ? AND role IN ('admin', 'sub_adm') ORDER BY role, nome";
+} else {
+    // Admin (N1) vê a si mesmo E seus Sub-Admins (N2)
+    $query_sql = "SELECT * FROM sub_administradores 
+                  WHERE org_id = ? AND (role = 'sub_adm' AND parent_admin_id = ?) OR (id_sub_adm = ?)
+                  ORDER BY role, nome";
+    $params[] = $id_logado;
+    $params[] = $id_logado;
+}
+$stmt = $pdo->prepare($query_sql);
+$stmt->execute($params);
 $sub_admins = $stmt->fetchAll();
 ?>
 
 <div class="container-fluid">
-    <h2>Gerenciar Administradores e Sub-Admins</h2>
-    <p>Painel para editar dados e permissões dos gerentes da sua organização.</p>
+    <h2>Gerenciar <?php echo ($role == 'super_adm') ? 'Admins (N1) e Sub-Admins (N2)' : 'Meus Gerentes (N1 e N2)'; ?></h2>
+    
     <div class="card shadow-sm">
         <div class="card-body table-responsive">
             <table class="table table-striped table-hover">
@@ -38,7 +51,10 @@ $sub_admins = $stmt->fetchAll();
                 <tbody>
                     <?php foreach ($sub_admins as $admin): ?>
                     <tr>
-                        <td><?php echo htmlspecialchars($admin['nome']); ?></td>
+                        <td>
+                            <?php echo htmlspecialchars($admin['nome']); ?>
+                            <?php if ($admin['id_sub_adm'] == $id_logado) echo " <span class='badge bg-success'>Você</span>"; ?>
+                        </td>
                         <td><?php echo htmlspecialchars($admin['email']); ?></td>
                         <td><?php echo htmlspecialchars($admin['username']); ?></td>
                         <td>

@@ -3,7 +3,7 @@ session_start();
 include('config/db.php');
 date_default_timezone_set('America/Sao_Paulo'); 
 
-// Verificação de segurança: Apenas 'platform_owner'
+// **** CORREÇÃO: A verificação de segurança DEVE ser 'platform_owner' ****
 if (!isset($_SESSION['role']) || $_SESSION['role'] != 'platform_owner') {
     header('Location: login.php');
     exit;
@@ -57,8 +57,8 @@ include('templates/header-new.php'); // Usa o novo header
                             <label for="role" class="form-label">Permissão (Role)</label>
                             <select class="form-control" name="role" required>
                                 <option value="super_adm" <?php echo ($admin['role'] == 'super_adm') ? 'selected' : ''; ?>>Super Admin (Dono da Empresa)</option>
-                                <option value="admin" <?php echo ($admin['role'] == 'admin') ? 'selected' : ''; ?>>Admin (Gerente)</option>
-                                <option value="sub_adm" <?php echo ($admin['role'] == 'sub_adm') ? 'selected' : ''; ?>>Sub-Admin (Gerente)</option>
+                                <option value="admin" <?php echo ($admin['role'] == 'admin') ? 'selected' : ''; ?>>Admin (Gerente N1)</option>
+                                <option value="sub_adm" <?php echo ($admin['role'] == 'sub_adm') ? 'selected' : ''; ?>>Sub-Admin (Gerente N2)</option>
                             </select>
                         </div>
                         

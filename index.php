@@ -31,7 +31,7 @@ $plano_empresarial = $plans[2] ?? null;
 <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm fixed-top">
     <div class="container">
         <a class="navbar-brand" href="index.php" style="font-size: 1.5rem; font-weight: 700;">
-            Acnoo Admin
+            DashCPA
         </a>
         <div class="ms-auto">
             <a href="login.php" class="btn btn-primary">

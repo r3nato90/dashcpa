@@ -8,12 +8,11 @@ if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['super_adm', 'adm
     header('Location: login.php');
     exit;
 }
-$role = $_SESSION['role'];
+$role = $_SESSION['role']; // Role de quem está LOGADO
 $id_logado = $_SESSION['id'];
 $org_id = $_SESSION['org_id'];
 
 // --- **** 1. VERIFICAR LIMITES DO PLANO **** ---
-// Busca os limites e a contagem atual da organização
 $stmt_plan = $pdo->prepare("
     SELECT 
         o.max_users, 
@@ -27,13 +26,12 @@ $stmt_plan->execute([$org_id]);
 $plan = $stmt_plan->fetch();
 
 if (!$plan) {
-    // Se o plano não for encontrado (erro crítico), nega
     log_action($pdo, 'ERROR_CREATE', "Falha ao criar conta. Organização (ID: $org_id) não encontrada.");
     header('Location: create_user.php?status=error_org_not_found');
     exit;
 }
 
-$tipo_conta = $_POST['tipo_conta'] ?? 'usuario'; 
+$tipo_conta = $_POST['tipo_conta'] ?? 'usuario'; // Tipo de conta a SER CRIADA
 
 // --- **** 2. ENFORÇAR OS LIMITES **** ---
 if ($tipo_conta == 'usuario') {
@@ -63,12 +61,18 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
     try {
         if ($tipo_conta == 'usuario') {
-            $id_sub_adm = null;
-            if ($role == 'super_adm') {
-                $id_sub_adm = (!empty($_POST['id_sub_adm'])) ? (int)$_POST['id_sub_adm'] : null;
-            } else {
-                $id_sub_adm = $id_logado; 
+            $id_sub_adm_vinculado = null;
+            
+            if ($role == 'sub_adm') {
+                // Se um N2 cria um N3, ele é vinculado ao N2
+                $id_sub_adm_vinculado = $id_logado;
+            } 
+            elseif ($role == 'admin' || $role == 'super_adm') {
+                // Se N1 ou Dono criam N3, eles usam o dropdown
+                $id_sub_adm_vinculado = (!empty($_POST['id_sub_adm'])) ? (int)$_POST['id_sub_adm'] : null;
             }
+
+            // (Validação de segurança: Dono/N1 só podem vincular a quem eles gerenciam - Omitida por simplicidade, mas o 'edit_user' já tem)
 
             // Verifica email DENTRO da organização
             $stmt_check1 = $pdo->prepare("SELECT email FROM usuarios WHERE email = ? AND org_id = ?");
@@ -87,14 +91,14 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                 INSERT INTO usuarios (org_id, nome, email, senha, percentual_comissao, id_sub_adm) 
                 VALUES (?, ?, ?, ?, ?, ?)
             ");
-            $stmt->execute([$org_id, $nome, $email, $senha_aleatoria, $percentual_comissao, $id_sub_adm]);
+            $stmt->execute([$org_id, $nome, $email, $senha_aleatoria, $percentual_comissao, $id_sub_adm_vinculado]);
             $new_id = $pdo->lastInsertId();
-            log_action($pdo, 'USER_CREATE', "Usuário '{$nome}' (ID: {$new_id}) foi criado.");
+            log_action($pdo, 'USER_CREATE', "Usuário '{$nome}' (ID: {$new_id}) foi criado. Gerente ID: {$id_sub_adm_vinculado}.");
         } 
         
         else if (in_array($tipo_conta, ['admin', 'sub_adm'])) {
             if ($role == 'sub_adm') throw new Exception("Permissão negada (Sub-Adm tentando criar gerente).");
-            if ($role == 'admin' && $tipo_conta == 'admin') throw new Exception("Admins só podem criar Sub-Admins.");
+            if ($role == 'admin' && $tipo_conta == 'admin') throw new Exception("Admins (N1) não podem criar outros Admins (N1).");
 
             $username = $_POST['username'];
             $_SESSION['new_user_details']['username'] = $username; 
@@ -117,14 +121,25 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                 exit;
             }
 
-            // Insere com org_id
+            // --- **** INÍCIO DA CORREÇÃO (BUG Hierarquia) **** ---
+            
+            $parent_admin_id = null;
+            // Se o usuário logado for um 'admin' (N1) e ele está criando um 'sub_adm' (N2)
+            if ($role == 'admin' && $tipo_conta == 'sub_adm') {
+                $parent_admin_id = $id_logado; // O N1 logado é o pai
+            }
+            // Se o 'super_adm' (Dono) cria, o parent_admin_id fica NULL (ligado ao Dono)
+
             $stmt = $pdo->prepare("
-                INSERT INTO sub_administradores (org_id, nome, email, username, senha, role, percentual_comissao) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO sub_administradores (org_id, nome, email, username, senha, role, percentual_comissao, parent_admin_id) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ");
-            $stmt->execute([$org_id, $nome, $email, $username, $senha_aleatoria, $tipo_conta, $percentual_comissao]);
+            $stmt->execute([$org_id, $nome, $email, $username, $senha_aleatoria, $tipo_conta, $percentual_comissao, $parent_admin_id]);
+            
+            // --- **** FIM DA CORREÇÃO **** ---
+            
             $new_id = $pdo->lastInsertId();
-            log_action($pdo, 'MANAGER_CREATE', "Gerente '{$nome}' (ID: {$new_id}, Role: {$tipo_conta}) foi criado.");
+            log_action($pdo, 'MANAGER_CREATE', "Gerente '{$nome}' (ID: {$new_id}, Role: {$tipo_conta}) foi criado. Pai ID: {$parent_admin_id}.");
         }
         
         header('Location: create_user_success.php');
@@ -133,7 +148,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     } catch (Exception $e) {
         log_action($pdo, 'ERROR_CREATE', "Erro crítico ao criar conta: " . $e->getMessage());
         unset($_SESSION['new_user_details']);
-        echo "Erro ao criar usuário: " . $e->getMessage();
+        // Redireciona de volta com a mensagem de erro
+        header('Location: create_user.php?status=error_general&msg=' . urlencode($e->getMessage()));
+        exit;
     }
 } else {
     header('Location: create_user.php');

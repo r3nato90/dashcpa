@@ -1,5 +1,31 @@
 <?php
 // O session_start() deve estar no topo de cada página ANTES de incluir este header.
+
+// **** INÍCIO DA CORREÇÃO (LINK DINÂMICO DO LOGO) ****
+$dashboard_link = "index.php"; // Default para visitante (página de preços)
+
+if (isset($_SESSION['role'])) {
+    switch ($_SESSION['role']) {
+        case 'platform_owner':
+            $dashboard_link = 'platform_owner.php';
+            break;
+        case 'super_adm':
+            $dashboard_link = 'dashboard_superadmin.php';
+            break;
+        case 'admin':
+            $dashboard_link = 'dashboard_admin.php';
+            break;
+        case 'sub_adm':
+            $dashboard_link = 'dashboard_subadmin.php';
+            break;
+        case 'usuario':
+            $dashboard_link = 'dashboard_usuario.php';
+            break;
+        default:
+            $dashboard_link = 'login.php'; // Fallback
+    }
+}
+// **** FIM DA CORREÇÃO ****
 ?>
 <!DOCTYPE html>
 <html lang="pt-br">
@@ -72,7 +98,7 @@
     <div id="sidebarOverlay" class="sidebar-overlay"></div>
 
     <div class="sidebar">
-        <a class="sidebar-brand" href="index.php">Acnoo Admin</a>
+        <a class="sidebar-brand" href="<?php echo $dashboard_link; ?>">DashCPA</a>
         
         <ul class="sidebar-nav">
             <?php if (isset($_SESSION['role'])): ?>
@@ -84,6 +110,9 @@
                 <?php if (in_array($_SESSION['role'], ['admin', 'sub_adm'])): ?>
                     <li class="nav-item"> <a class="nav-link" href="create_user.php"><i class="fas fa-user-plus"></i> Criar Conta</a> </li>
                     <li class="nav-item"> <a class="nav-link" href="manage_users.php"><i class="fas fa-users-cog"></i> Gerenciar Usuários</a> </li>
+                    <?php if ($_SESSION['role'] == 'admin'): ?>
+                        <li class="nav-item"> <a class="nav-link" href="manage_subadmins.php"><i class="fas fa-user-shield"></i> Gerenciar Sub-Admins</a> </li>
+                    <?php endif; ?>
                     <li class="nav-item"> <a class="nav-link" href="reports.php"><i class="fas fa-chart-line"></i> Novo Relatório</a> </li>
                     <li class="nav-item"> <a class="nav-link" href="saved_reports.php"><i class="fas fa-save"></i> Relatórios Salvos</a> </li>
                     <?php if ($_SESSION['role'] == 'admin'): ?>
@@ -96,6 +125,7 @@
                 <?php if ($_SESSION['role'] == 'super_adm'): ?>
                     <li class="nav-item"> <a class="nav-link active" href="dashboard_superadmin.php"><i class="fas fa-crown"></i> Painel Super Admin</a> </li>
                     <li class="nav-item"> <a class="nav-link" href="create_user.php"><i class="fas fa-user-plus"></i> Criar Conta</a> </li>
+                    <li class="nav-item"> <a class="nav-link" href="import_users.php"><i class="fas fa-file-upload"></i> Importar Usuários</a> </li>
                     <li class="nav-item"> <a class="nav-link" href="manage_users.php"><i class="fas fa-users-cog"></i> Gerenciar Usuários</a> </li>
                     <li class="nav-item"> <a class="nav-link" href="manage_subadmins.php"><i class="fas fa-user-shield"></i> Gerenciar Admins</a> </li>
                     <li class="nav-item"> <a class="nav-link" href="reports.php"><i class="fas fa-chart-line"></i> Novo Relatório</a> </li>
@@ -117,7 +147,7 @@
 
             <?php else: ?>
                 <li class="nav-item"> <a class="nav-link" href="login.php"><i class="fas fa-sign-in-alt"></i> Login</a> </li>
-                <li class="nav-item"> <a class="nav-link" href="pricing.php"><i class="fas fa-building"></i> Criar Conta (Empresa)</a> </li>
+                <li class="nav-item"> <a class="nav-link" href="index.php"><i class="fas fa-building"></i> Criar Conta (Empresa)</a> </li>
             <?php endif; ?>
         </ul>
     </div>

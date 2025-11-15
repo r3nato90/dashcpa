@@ -3,13 +3,11 @@ session_start();
 include('config/db.php');
 include('config/logger.php'); 
 
-// **** ADICIONADO: Verificação de Sessão Multi-Tenant ****
 if (!isset($_SESSION['id']) || !isset($_SESSION['org_id'])) {
     header('Location: login.php');
     exit;
 }
-$org_id = $_SESSION['org_id']; // O ID da organização do usuário logado
-// **** FIM DA VERIFICAÇÃO ****
+$org_id = $_SESSION['org_id']; 
 
 if ($_SERVER["REQUEST_METHOD"] == "POST" && !empty($_POST['usuario_id'])) {
     
@@ -27,28 +25,46 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !empty($_POST['usuario_id'])) {
         $log_tipo_relatorio = ($data_selecionada < $hoje) ? "Retroativo ($data_selecionada)" : "Data Manual ($data_selecionada)";
     }
 
-    $lucro = ($saque + $bau) - $deposito;
+    $lucro_total = ($saque + $bau) - $deposito;
 
-    // **** MODIFICADO: Busca o usuário DENTRO da organização ****
-    $stmt_user = $pdo->prepare("SELECT nome, percentual_comissao, id_sub_adm FROM usuarios WHERE id_usuario = ? AND org_id = ?");
+    // --- **** INÍCIO DA LÓGICA CORRIGIDA (SOBRA TOTAL PARA N1) **** ---
+    
+    $stmt_user = $pdo->prepare("
+        SELECT 
+            u.nome, 
+            u.percentual_comissao AS pct_usuario, 
+            u.id_sub_adm,
+            s.percentual_comissao AS pct_sub_adm,
+            s.parent_admin_id
+        FROM usuarios u
+        LEFT JOIN sub_administradores s ON u.id_sub_adm = s.id_sub_adm AND s.org_id = u.org_id
+        WHERE u.id_usuario = ? AND u.org_id = ?
+    ");
     $stmt_user->execute([$usuario_id, $org_id]);
-    $user = $stmt_user->fetch();
+    $user_data = $stmt_user->fetch(PDO::FETCH_ASSOC);
 
-    if ($user) {
-        $comissao_usuario = 0;
-        if ($user['percentual_comissao'] > 0) {
-            $comissao_usuario = $lucro * ($user['percentual_comissao'] / 100);
-        }
+    if ($user_data) {
+        $nome_usuario = $user_data['nome'];
+
+        // 1. Cálculo Comissão Operador (N3) - % do Lucro Total
+        $comissao_usuario_pct = $user_data['pct_usuario'] ?? 0;
+        $comissao_usuario = $lucro_total * ($comissao_usuario_pct / 100); // Ex: 100 * 0.30 = 30
+
+        // 2. Cálculo Comissão Sub-Admin (N2) - % do Lucro Total
+        $comissao_sub_adm_pct = $user_data['pct_sub_adm'] ?? 0;
+        $comissao_sub_adm = $lucro_total * ($comissao_sub_adm_pct / 100); // Ex: 100 * 0.10 = 10
+
+        // 3. Cálculo Comissão Admin (N1) - A SOBRA
+        // (A % do Admin N1 no cadastro é ignorada, como solicitado)
+        $comissao_admin = $lucro_total - $comissao_usuario - $comissao_sub_adm; // Ex: 100 - 30 - 10 = 60
         
-        $comissao_sub_adm = 0; 
-        if ($user['id_sub_adm'] != NULL) {
-            $comissao_sub_adm = $lucro - $comissao_usuario; 
-        }
+        // (Lucro do Super-Admin = 0)
+
+        // --- **** FIM DA LÓGICA CORRIGIDA **** ---
 
         try {
             $pdo->beginTransaction();
 
-            // **** MODIFICADO: Adiciona org_id ****
             $stmt_dep = $pdo->prepare("INSERT INTO transacoes (org_id, id_usuario, tipo_transacao, valor, data) VALUES (?, ?, 'deposito', ?, ?)");
             $stmt_dep->execute([$org_id, $usuario_id, $deposito, $data_atual]);
             
@@ -58,23 +74,22 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !empty($_POST['usuario_id'])) {
             $stmt_bau = $pdo->prepare("INSERT INTO transacoes (org_id, id_usuario, tipo_transacao, valor, data) VALUES (?, ?, 'bau', ?, ?)");
             $stmt_bau->execute([$org_id, $usuario_id, $bau, $data_atual]);
 
-            // **** MODIFICADO: Adiciona org_id ****
             $stmt_saldo = $pdo->prepare("UPDATE usuarios SET saldo = saldo + ? WHERE id_usuario = ? AND org_id = ?");
-            $stmt_saldo->execute([$lucro, $usuario_id, $org_id]);
+            $stmt_saldo->execute([$lucro_total, $usuario_id, $org_id]);
 
-            // **** MODIFICADO: Adiciona org_id ****
+            // Salva os 3 níveis de comissão no relatório
             $stmt_relatorio = $pdo->prepare("
                 INSERT INTO relatorios 
-                (org_id, id_usuario, lucro_diario, comissao_usuario, comissao_sub_adm, valor_deposito, valor_saque, valor_bau, data) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (org_id, id_usuario, lucro_diario, comissao_usuario, comissao_sub_adm, comissao_admin, valor_deposito, valor_saque, valor_bau, data) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
-            $stmt_relatorio->execute([$org_id, $usuario_id, $lucro, $comissao_usuario, $comissao_sub_adm, $deposito, $saque, $bau, $data_atual]);
+            $stmt_relatorio->execute([$org_id, $usuario_id, $lucro_total, $comissao_usuario, $comissao_sub_adm, $comissao_admin, $deposito, $saque, $bau, $data_atual]);
 
             $pdo->commit();
 
-            log_action($pdo, 'RELATORIO_ENVIO', "Relatório ($log_tipo_relatorio) enviado para '{$user['nome']}' (ID: $usuario_id). Lucro: $lucro.");
+            log_action($pdo, 'RELATORIO_ENVIO', "Relatório ($log_tipo_relatorio) enviado para '{$nome_usuario}' (ID: $usuario_id). Lucro: $lucro_total.");
 
-            // Redirecionamento (lógica existente)
+            // Redirecionamento
             $redirect_url = 'index.php'; 
             if (isset($_SESSION['role'])) {
                 if ($_SESSION['role'] == 'super_adm') $redirect_url = 'dashboard_superadmin.php';
@@ -101,7 +116,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !empty($_POST['usuario_id'])) {
     
     $redirect_url = 'index.php';
     if (isset($_SESSION['role'])) {
-        // (lógica de redirecionamento existente)
         if ($_SESSION['role'] == 'super_adm') $redirect_url = 'dashboard_superadmin.php';
         elseif ($_SESSION['role'] == 'admin') $redirect_url = 'dashboard_admin.php';
         elseif ($_SESSION['role'] == 'sub_adm') $redirect_url = 'dashboard_subadmin.php';

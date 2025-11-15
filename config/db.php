@@ -36,7 +36,7 @@ $host = getenv('DB_HOST') ?: 'localhost';
 $port = getenv('DB_PORT') ?: '3306';
 $dbname = getenv('DB_DATABASE') ?: 'u864690811_sistema_novo1';
 $username = getenv('DB_USERNAME') ?: 'u864690811_sistema_novo1';
-$password = getenv('DB_PASSWORD') ?: ';nyA/YUkH7';
+$password = getenv('DB_PASSWORD') ?: 'F=8jPIAu>e8K';
 
 // Carrega a URL do site (AGORA DEVE FUNCIONAR)
 // Usamos $_ENV como uma garantia extra caso putenv() não seja suficiente

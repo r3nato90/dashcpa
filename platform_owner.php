@@ -19,8 +19,36 @@ $stmt_total_orgs = $pdo->query("SELECT COUNT(*) FROM organizations");
 $total_orgs = $stmt_total_orgs->fetchColumn();
 $stmt_total_users = $pdo->query("SELECT COUNT(*) FROM usuarios");
 $total_users = $stmt_total_users->fetchColumn();
-$stmt_total_lucro = $pdo->query("SELECT SUM(lucro_diario) FROM relatorios");
-$total_lucro = $stmt_total_lucro->fetchColumn() ?? 0;
+
+// --- **** MODIFICAÇÃO: Calcular Lucro das Assinaturas **** ---
+// Busca os planos e os nomes das organizações ativas
+$stmt_assinaturas = $pdo->query("
+    SELECT o.plan_type, p.price_description
+    FROM organizations o
+    JOIN plans p ON o.plan_type = p.plan_name
+    WHERE o.status = 'active'
+");
+$assinaturas = $stmt_assinaturas->fetchAll(PDO::FETCH_ASSOC);
+
+$total_lucro_assinaturas = 0;
+foreach ($assinaturas as $assinatura) {
+    // Tenta extrair o valor numérico do texto "R$ 99,90 / MÊS"
+    $preco_texto = $assinatura['price_description'];
+    
+    // Remove tudo que não for dígito, vírgula ou ponto
+    $preco_limpo = preg_replace('/[^\d,.]/', '', $preco_texto);
+    
+    // Remove pontos de milhar (ex: 1.000,00)
+    $preco_limpo = str_replace('.', '', $preco_limpo);
+    
+    // Substitui vírgula decimal por ponto (ex: 99,90 -> 99.90)
+    $preco_limpo = str_replace(',', '.', $preco_limpo);
+    
+    $valor = (float)$preco_limpo;
+    $total_lucro_assinaturas += $valor;
+}
+// --- **** FIM DA MODIFICAÇÃO **** ---
+
 
 // 2. Status da API do Mercado Pago
 $stmt_mp_keys = $pdo->query("SELECT setting_key, setting_value FROM platform_settings WHERE setting_key IN ('mp_public_key', 'mp_access_token')");
@@ -28,6 +56,7 @@ $mp_keys = $stmt_mp_keys->fetchAll(PDO::FETCH_KEY_PAIR);
 $is_mp_configured = (!empty($mp_keys['mp_public_key']) && !empty($mp_keys['mp_access_token']));
 
 // 3. Gráfico de Linha (Últimos 7 dias - Global)
+// (Este gráfico continua mostrando o lucro operacional dos relatórios)
 $stmt_line_chart = $pdo->query("
     SELECT DATE(data) as dia, SUM(lucro_diario) as lucro_total
     FROM relatorios WHERE data >= CURDATE() - INTERVAL 7 DAY
@@ -45,7 +74,7 @@ foreach ($line_chart_data as $row) {
     $chart_lucro[$row['dia']] = $row['lucro_total'];
 }
 
-// 4. Gráfico Donut (Top 5 Organizações por Lucro)
+// 4. Gráfico Donut (Top 5 Organizações por Lucro Operacional)
 $stmt_donut_chart = $pdo->query("
     SELECT o.org_name, SUM(r.lucro_diario) as total_lucro_org
     FROM relatorios r
@@ -109,8 +138,8 @@ include('templates/header-new.php');
                 <div class="card-body">
                     <div class="kpi-icon bg-success-soft"><i class="fas fa-dollar-sign"></i></div>
                     <div>
-                        <h6 class="text-muted mb-1">Lucro (Total Clientes)</h6>
-                        <h4 class="fw-bold mb-0">R$ <?php echo number_format($total_lucro, 2, ',', '.'); ?></h4>
+                        <h6 class="text-muted mb-1">Receita Mensal (Assinaturas)</h6>
+                        <h4 class="fw-bold mb-0">R$ <?php echo number_format($total_lucro_assinaturas, 2, ',', '.'); ?></h4>
                     </div>
                 </div>
             </div>
@@ -146,7 +175,7 @@ include('templates/header-new.php');
     <div class="row mb-4">
         <div class="col-lg-8 mb-3">
             <div class="card shadow-sm h-100">
-                <div class="card-header"><i class="fas fa-chart-line me-2"></i>Lucro Global (Últimos 7 Dias)</div>
+                <div class="card-header"><i class="fas fa-chart-line me-2"></i>Lucro Operacional Global (Últimos 7 Dias)</div>
                 <div class="card-body">
                     <canvas id="lucroLineChart"></canvas>
                 </div>
@@ -154,7 +183,7 @@ include('templates/header-new.php');
         </div>
         <div class="col-lg-4 mb-3">
             <div class="card shadow-sm h-100">
-                <div class="card-header"><i class="fas fa-chart-pie me-2"></i>Top 5 Clientes (por Lucro)</div>
+                <div class="card-header"><i class="fas fa-chart-pie me-2"></i>Top 5 Clientes (por Lucro Operacional)</div>
                 <div class="card-body">
                     <canvas id="topClientsDoughnutChart"></canvas>
                 </div>
