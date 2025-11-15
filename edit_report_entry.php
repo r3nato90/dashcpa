@@ -1,223 +1,65 @@
 <?php
 session_start();
 include('config/db.php');
-date_default_timezone_set('America/Sao_Paulo'); 
-include('config/logger.php');
+date_default_timezone_set('America/Sao_Paulo');
 
-$page_title = "Editar Transação";
-$breadcrumb_active = "Editar Transação";
-
-// Verificação de segurança: Apenas operadores (usuario) podem editar suas transações.
-if (!isset($_SESSION['role']) || $_SESSION['role'] != 'usuario') {
+// **** VERIFICAÇÃO MULTI-TENANT ****
+if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['super_adm', 'admin', 'sub_adm']) || !isset($_SESSION['org_id'])) {
     header('Location: login.php');
     exit;
 }
-$id_usuario_logado = $_SESSION['user_id'];
-$id_relatorio = $_GET['id'] ?? null;
-$message = "";
+$role = $_SESSION['role'];
+$id_logado = $_SESSION['id'];
+$org_id = $_SESSION['org_id'];
+// **** FIM DA VERIFICAÇÃO ****
 
-if (!$id_relatorio) {
-    header('Location: dashboard_usuario.php');
+if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
+    header('Location: reports.php?status=error_invalid_id');
     exit;
 }
+$id_relatorio = (int)$_GET['id'];
 
-// 1. Buscar a transação para edição
+// **** MODIFICADO: Busca DENTRO da organização ****
 $stmt_report = $pdo->prepare("
-    SELECT r.*, u.percentual_comissao 
+    SELECT r.*, u.nome AS nome_usuario, u.id_sub_adm 
     FROM relatorios r
-    JOIN usuarios u ON r.id_usuario = u.id
-    WHERE r.id_relatorio = ? AND r.id_usuario = ?
+    JOIN usuarios u ON r.id_usuario = u.id_usuario
+    WHERE r.id_relatorio = ? AND r.org_id = ?
 ");
-$stmt_report->execute([$id_relatorio, $id_usuario_logado]);
-$transacao = $stmt_report->fetch(PDO::FETCH_ASSOC);
+$stmt_report->execute([$id_relatorio, $org_id]);
+$report = $stmt_report->fetch();
 
-if (!$transacao) {
-    $message = "<div class='alert alert-danger'>Transação não encontrada ou acesso negado.</div>";
-    // Tenta incluir o header.php antes de sair se houver mensagem
-    include('header.php'); 
-    echo "<div class='container mt-5'>{$message} <p><a href='dashboard_usuario.php'>Voltar ao Dashboard</a></p></div>";
-    include('footer.php');
+if (!$report) {
+    header('Location: reports.php?status=error_not_found');
     exit;
 }
-
-// Valores atuais
-$valor_deposito = number_format($transacao['valor_deposito'], 2, ',', '.');
-$valor_saque = number_format($transacao['valor_saque'], 2, ',', '.');
-$valor_bau = number_format($transacao['valor_bau'], 2, ',', '.');
-$data_transacao = date('Y-m-d', strtotime($transacao['data']));
-$hora_transacao = date('H:i', strtotime($transacao['data']));
-$user_comissao_rate = (float)$transacao['percentual_comissao'];
-
-// Inclusão de cabeçalho
-include('header.php'); 
+if ($role != 'super_adm' && $report['id_sub_adm'] != $id_logado) {
+    header('Location: reports.php?status=error_permission');
+    exit;
+}
+include('templates/header.php');
 ?>
-
-<h2 class="mb-4">Editar Transação #<?php echo htmlspecialchars($id_relatorio); ?></h2>
-<p class="text-muted">A comissão será recalculada automaticamente. Sua taxa atual é de **<?php echo number_format($user_comissao_rate, 2, ',', '.'); ?>%**.</p>
-
-<div class="card shadow-sm">
-    <div class="card-body">
-        <form id="editTransactionForm" method="POST" action="process_edit_report_entry.php">
-            <input type="hidden" name="id_relatorio" value="<?php echo htmlspecialchars($id_relatorio); ?>">
-            <input type="hidden" id="user_comissao_rate" value="<?php echo $user_comissao_rate; ?>">
-
-            <!-- Campos de Data e Hora -->
-            <div class="row mb-3">
-                <div class="col-md-6">
-                    <label for="data_transacao" class="form-label">Data da Transação</label>
-                    <input type="date" class="form-control" id="data_transacao" name="data_transacao" value="<?php echo htmlspecialchars($data_transacao); ?>" required>
-                </div>
-                <div class="col-md-6">
-                    <label for="hora_transacao" class="form-label">Hora da Transação</label>
-                    <input type="time" class="form-control" id="hora_transacao" name="hora_transacao" value="<?php echo htmlspecialchars($hora_transacao); ?>" required>
-                </div>
-            </div>
-
-            <!-- Campos de Valores (Moeda) -->
-            <div class="row mb-4">
-                <div class="col-md-4">
-                    <label for="valor_deposito" class="form-label">Valor de Depósito</label>
-                    <div class="input-group">
-                        <span class="input-group-text">R$</span>
-                        <input type="text" class="form-control currency-mask" id="valor_deposito" name="valor_deposito" value="<?php echo $valor_deposito; ?>" required>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <label for="valor_saque" class="form-label">Valor de Saque</label>
-                    <div class="input-group">
-                        <span class="input-group-text">R$</span>
-                        <input type="text" class="form-control currency-mask" id="valor_saque" name="valor_saque" value="<?php echo $valor_saque; ?>" required>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <label for="valor_bau" class="form-label">Valor de Baú</label>
-                    <div class="input-group">
-                        <span class="input-group-text">R$</span>
-                        <input type="text" class="form-control currency-mask" id="valor_bau" name="valor_bau" value="<?php echo $valor_bau; ?>" required>
-                    </div>
+<div class="container-fluid">
+    <div class="row justify-content-center">
+        <div class="col-md-7">
+            <div class="card shadow-lg">
+                <div class="card-header bg-warning"><h4>Corrigir Relatório</h4></div>
+                <div class="card-body">
+                    <p>Você está editando o relatório de <strong><?php echo htmlspecialchars($report['nome_usuario']); ?></strong></p>
+                    <p>Data Original: <strong><?php echo date('d/m/Y H:i', strtotime($report['data'])); ?></strong></p>
+                    <hr>
+                    <form action="process_edit_report_entry.php" method="POST">
+                        <input type="hidden" name="id_relatorio" value="<?php echo $report['id_relatorio']; ?>">
+                        <div class="mb-3"><label for="valor_deposito" class="form-label">DEPÓSITO</label><input type="number" step="0.01" class="form-control" name="valor_deposito" value="<?php echo $report['valor_deposito']; ?>" required></div>
+                        <div class="mb-3"><label for="valor_saque" class="form-label">SAQUE</label><input type="number" step="0.01" class="form-control" name="valor_saque" value="<?php echo $report['valor_saque']; ?>" required></div>
+                        <div class="mb-3"><label for="valor_bau" class="form-label">BAÚ (Saldo Final)</label><input type="number" step="0.01" class="form-control" name="valor_bau" value="<?php echo $report['valor_bau']; ?>" required></div>
+                        <div class="alert alert-info"><strong>Atenção:</strong> O Lucro e as Comissões serão recalculados.</div>
+                        <button type="submit" class="btn btn-success w-100">Salvar Correção</button>
+                        <a href="reports.php" class="btn btn-secondary w-100 mt-2">Cancelar</a>
+                    </form>
                 </div>
             </div>
-
-            <!-- Resumo e Comissão Calculada (Atual) -->
-            <div class="row mb-4">
-                <div class="col-md-6">
-                    <div class="alert alert-primary">
-                        **Lucro Bruto Atual: R$ <span id="lucro_bruto_display"><?php echo number_format($transacao['lucro_diario'], 2, ',', '.'); ?></span>**
-                    </div>
-                </div>
-                <div class="col-md-6">
-                    <div class="alert alert-success">
-                        **Sua Comissão Atual: R$ <span id="comissao_display"><?php echo number_format($transacao['comissao_usuario'], 2, ',', '.'); ?></span>**
-                    </div>
-                </div>
-            </div>
-
-            <div class="d-flex justify-content-between">
-                <a href="dashboard_usuario.php" class="btn btn-secondary">
-                    <i class="fas fa-arrow-left me-1"></i> Voltar
-                </a>
-                <button type="submit" class="btn btn-warning">
-                    <i class="fas fa-edit me-2"></i> Salvar Alterações
-                </button>
-            </div>
-        </form>
-        
-        <!-- Botão de Apagar -->
-        <div class="mt-3 text-end">
-            <a href="delete_report_entry.php?id=<?php echo $id_relatorio; ?>" class="btn btn-outline-danger" onclick="return confirm('Tem certeza que deseja APAGAR este registro? Esta ação é irreversível.');">
-                <i class="fas fa-trash-alt me-1"></i> Apagar Registro
-            </a>
         </div>
-        
     </div>
 </div>
-
-<script>
-    // Carrega jQuery Mask Plugin
-    $(document).ready(function(){
-        // Aplica a máscara de moeda
-        $('.currency-mask').mask('0#.#00,00', {reverse: true});
-        
-        // Função para calcular valores
-        function calcularValores() {
-            // Função para converter string de moeda BRL para float
-            function parseBRL(value) {
-                return parseFloat(value.replace(/\./g, '').replace(',', '.'));
-            }
-
-            const depositoStr = $('#valor_deposito').val() || '0,00';
-            const saqueStr = $('#valor_saque').val() || '0,00';
-            const bauStr = $('#valor_bau').val() || '0,00';
-            const comissaoRate = parseFloat($('#user_comissao_rate').val()) / 100;
-
-            const deposito = parseBRL(depositoStr);
-            const saque = parseBRL(saqueStr);
-            const bau = parseBRL(bauStr);
-
-            // Lucro Bruto = (Depósito + Baú) - Saque
-            const lucroBruto = (deposito + bau) - saque;
-
-            // Comissão = Lucro Bruto * Taxa de Comissão (apenas se o lucro for positivo)
-            let comissao = 0;
-            if (lucroBruto > 0) {
-                 comissao = lucroBruto * comissaoRate;
-            } else {
-                 comissao = 0; 
-            }
-            
-            // Formatação para exibição
-            function formatBRL(value) {
-                return value.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            }
-
-            $('#lucro_bruto_display').text(formatBRL(lucroBruto));
-            $('#comissao_display').text(formatBRL(comissao));
-
-            // Atualiza o estado da cor do lucro
-            if (lucroBruto >= 0) {
-                $('#lucro_bruto_display').parent().removeClass('alert-danger').addClass('alert-primary');
-            } else {
-                $('#lucro_bruto_display').parent().removeClass('alert-primary').addClass('alert-danger');
-            }
-            
-             // Atualiza a cor da comissão
-            if (comissao > 0) {
-                $('#comissao_display').parent().removeClass('alert-danger').addClass('alert-success');
-            } else {
-                $('#comissao_display').parent().removeClass('alert-success').addClass('alert-danger');
-            }
-        }
-
-        // Liga o evento de input nos campos para recalcular
-        $('.currency-mask').on('keyup change', calcularValores);
-        
-        // Submissão do formulário
-        $('#editTransactionForm').on('submit', function(e) {
-            // Recalcular antes de enviar para garantir que os valores ocultos estejam atualizados
-            calcularValores(); 
-
-            // Obtém os valores formatados após a recalibragem
-            const lucroBrutoFinal = parseBRL($('#lucro_bruto_display').text() || '0,00');
-            const comissaoFinal = parseBRL($('#comissao_display').text() || '0,00');
-
-            // Adiciona campos ocultos para os novos valores calculados
-            $(this).append('<input type="hidden" name="lucro_bruto_calculado" value="' + lucroBrutoFinal.toFixed(2) + '">');
-            $(this).append('<input type="hidden" name="comissao_usuario_calculada" value="' + comissaoFinal.toFixed(2) + '">');
-            
-             // Remove as máscaras dos campos de valor antes do envio
-            $('.currency-mask').each(function() {
-                const unmaskedValue = $(this).val().replace(/\./g, '').replace(',', '.');
-                $(this).val(unmaskedValue);
-            });
-
-            return true; 
-        });
-        
-         // Cálculo inicial ao carregar a página (força a cor correta)
-         calcularValores();
-    });
-</script>
-
-<?php 
-include('footer.php');
-?>
+<?php include('templates/footer.php'); ?>

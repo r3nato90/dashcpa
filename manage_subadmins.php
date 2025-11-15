@@ -1,129 +1,60 @@
 <?php
 session_start();
 include('config/db.php');
-date_default_timezone_set('America/Sao_Paulo'); 
-include('config/logger.php');
+date_default_timezone_set('America/Sao_Paulo');
 
-$page_title = "Gerenciar Administradores";
-$breadcrumb_active = "Gerenciar Admins";
-
-// Verificação de segurança: Apenas Super Admin e Admin podem acessar
-if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['super_adm', 'admin'])) {
+// **** VERIFICAÇÃO MULTI-TENANT ****
+if (!isset($_SESSION['role']) || $_SESSION['role'] != 'super_adm' || !isset($_SESSION['org_id'])) {
     header('Location: login.php');
     exit;
 }
-$role_logado = $_SESSION['role'];
-$id_logado = $_SESSION['user_id'];
+$org_id = $_SESSION['org_id'];
+// **** FIM DA VERIFICAÇÃO ****
 
-// Mensagens de status
-$message = "";
-if (isset($_GET['status'])) {
-    if ($_GET['status'] == 'updated') {
-        $message = "<div class='alert alert-success mt-3'>Administrador/Sub-Admin atualizado com sucesso!</div>";
-    } elseif ($_GET['status'] == 'deleted') {
-        $message = "<div class='alert alert-success mt-3'>Administrador/Sub-Admin apagado com sucesso!</div>";
-    } elseif ($_GET['status'] == 'error_permission') {
-        $message = "<div class='alert alert-danger mt-3'>Erro de Permissão: Você não pode realizar esta ação.</div>";
-    }
+include('templates/header.php');
+
+if (isset($_GET['status']) && $_GET['status'] == 'updated') {
+    echo "<div class='container-fluid'><div class='alert alert-success'>Gerente atualizado!</div></div>";
 }
 
-// 1. Query para buscar administradores e sub-administradores
-$query = "
-    SELECT s.*, m.nome AS nome_manager, m.role AS role_manager 
-    FROM sub_administradores s
-    LEFT JOIN sub_administradores m ON s.manager_id = m.id
-";
-$params = [];
-$where_clauses = [];
-
-if ($role_logado == 'super_adm') {
-    // Super Admin vê todos exceto a si mesmo (se for o único Super Admin)
-    $where_clauses[] = "s.id != ?";
-    $params[] = $id_logado;
-} elseif ($role_logado == 'admin') {
-    // Admin vê apenas os Sub-Admins sob sua gerência
-    $where_clauses[] = "s.role = 'sub_adm'";
-    $where_clauses[] = "s.manager_id = ?";
-    $params[] = $id_logado;
-}
-
-// Adiciona as cláusulas WHERE
-if (!empty($where_clauses)) {
-    $query .= " WHERE " . implode(" AND ", $where_clauses);
-}
-
-$query .= " ORDER BY s.role DESC, s.nome ASC";
-$stmt = $pdo->prepare($query);
-$stmt->execute($params);
-$gerentes = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-// 2. Título dinâmico
-$h2_title = $role_logado == 'super_adm' ? "Gerenciar Admins e Sub-Admins" : "Gerenciar Sub-Admins";
-
-include('header.php'); 
+// **** MODIFICADO: Busca DENTRO da organização e exclui 'super_adm' ****
+$stmt = $pdo->prepare("SELECT * FROM sub_administradores WHERE org_id = ? AND role != 'super_adm' ORDER BY nome");
+$stmt->execute([$org_id]);
+$sub_admins = $stmt->fetchAll();
 ?>
 
-<h2 class="mb-4"><?php echo $h2_title; ?></h2>
-
-<!-- Botões de Ação -->
-<div class="mb-4">
-    <a href="register_admin.php" class="btn btn-primary <?php echo ($role_logado != 'super_adm') ? 'd-none' : ''; ?>">
-         <i class="fas fa-plus-circle me-2"></i> Criar Novo Administrador (Admin)
-    </a>
-    <a href="register_subadmin.php" class="btn btn-secondary">
-         <i class="fas fa-plus-circle me-2"></i> Criar Novo Sub-Admin
-    </a>
-</div>
-
-<?php echo $message; // Exibe feedback de status ?>
-
-<div class="card shadow-sm">
-    <div class="card-body table-responsive">
-        <table class="table table-striped table-hover">
-            <thead class="table-dark">
-                <tr>
-                    <th>Nome</th>
-                    <th>Email</th>
-                    <th>Cargo</th>
-                    <th>Comissão (%)</th>
-                    <th>Gerente Superior</th>
-                    <th>Ações</th> 
-                </tr>
-            </thead>
-            <tbody>
-                <?php if (empty($gerentes)): ?>
-                    <tr><td colspan="6" class="text-center text-muted">Nenhum administrador ou sub-admin encontrado.</td></tr>
-                <?php endif; ?>
-                <?php foreach ($gerentes as $gerente): ?>
-                <tr>
-                    <td><?php echo htmlspecialchars($gerente['nome']); ?></td>
-                    <td><?php echo htmlspecialchars($gerente['email']); ?></td>
-                    <td><span class="badge bg-<?php echo ($gerente['role'] == 'admin' ? 'warning' : 'info'); ?> text-dark">
-                        <?php echo strtoupper(str_replace('_', ' ', $gerente['role'])); ?>
-                    </span></td>
-                    <td><?php echo number_format($gerente['comissao'], 2, ',', '.'); ?>%</td>
-                    <td>
-                        <?php 
-                            if ($gerente['role'] === 'admin' && $gerente['manager_id'] === null) {
-                                echo "<span class='text-primary'>Super Admin (Global)</span>";
-                            } elseif ($gerente['manager_id'] && $gerente['role_manager']) {
-                                echo htmlspecialchars($gerente['nome_manager']) . " (" . strtoupper(str_replace('_', ' ', $gerente['role_manager'])) . ")";
-                            } else {
-                                echo "<span class='text-muted'>N/A</span>";
-                            }
-                        ?>
-                    </td>
-                    <td>
-                        <a href="edit_subadmin.php?id=<?php echo $gerente['id']; ?>" class="btn btn-primary btn-sm me-2">Editar</a>
-                        <a href="delete_subadmin.php?id=<?php echo $gerente['id']; ?>" class="btn btn-danger btn-sm" onclick="return confirm('Tem certeza que deseja APAGAR este Gerente? Todos os usuários e relatórios associados a ele precisarão ser reatribuídos ou serão perdidos.');">
-                            Apagar
-                        </a>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
+<div class="container-fluid">
+    <h2>Gerenciar Administradores e Sub-Admins</h2>
+    <p>Painel para editar dados e permissões dos gerentes da sua organização.</p>
+    <div class="card shadow-sm">
+        <div class="card-body table-responsive">
+            <table class="table table-striped table-hover">
+                <thead>
+                    <tr>
+                        <th>Nome</th><th>Email</th><th>Username</th><th>Permissão (Role)</th>
+                        <th>Comissão (%)</th><th>Ação</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($sub_admins as $admin): ?>
+                    <tr>
+                        <td><?php echo htmlspecialchars($admin['nome']); ?></td>
+                        <td><?php echo htmlspecialchars($admin['email']); ?></td>
+                        <td><?php echo htmlspecialchars($admin['username']); ?></td>
+                        <td>
+                            <span class="<?php echo $admin['role'] == 'admin' ? 'badge bg-danger' : 'badge bg-info'; ?>">
+                                <?php echo htmlspecialchars($admin['role']); ?>
+                            </span>
+                        </td>
+                        <td><?php echo number_format($admin['percentual_comissao'], 2, ',', '.'); ?>%</td>
+                        <td>
+                            <a href="edit_subadmin.php?id=<?php echo $admin['id_sub_adm']; ?>" class="btn btn-primary btn-sm">Editar</a>
+                            </td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
-
-<?php include('footer.php'); ?>
+<?php include('templates/footer.php'); ?>

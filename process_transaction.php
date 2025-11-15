@@ -1,136 +1,113 @@
 <?php
-session_start();
+session_start(); 
 include('config/db.php');
-date_default_timezone_set('America/Sao_Paulo'); 
-include('config/logger.php');
+include('config/logger.php'); 
 
-// Verificação de segurança: Apenas operadores (usuario) podem processar transações
-if (!isset($_SESSION['role']) || $_SESSION['role'] != 'usuario') {
+// **** ADICIONADO: Verificação de Sessão Multi-Tenant ****
+if (!isset($_SESSION['id']) || !isset($_SESSION['org_id'])) {
     header('Location: login.php');
     exit;
 }
+$org_id = $_SESSION['org_id']; // O ID da organização do usuário logado
+// **** FIM DA VERIFICAÇÃO ****
 
-if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+if ($_SERVER["REQUEST_METHOD"] == "POST" && !empty($_POST['usuario_id'])) {
     
-    // Dados obrigatórios
-    $id_usuario = $_POST['id_usuario'] ?? null;
-    $data_transacao = $_POST['data_transacao'] ?? null;
-    $hora_transacao = $_POST['hora_transacao'] ?? null;
+    $usuario_id = $_POST['usuario_id'];
+    $deposito = $_POST['deposito'];
+    $saque = $_POST['saque'];
+    $bau = $_POST['bau'];
+    $data_atual = date('Y-m-d H:i:s');
+    $hoje = date('Y-m-d');
+    $log_tipo_relatorio = "Padrão"; 
 
-    // Valores (já convertidos do frontend, mas verificaremos a integridade)
-    $valor_deposito = (float)($_POST['valor_deposito'] ?? 0);
-    $valor_saque = (float)($_POST['valor_saque'] ?? 0);
-    $valor_bau = (float)($_POST['valor_bau'] ?? 0);
-
-    // Valores calculados (recalculados no backend para segurança)
-    $lucro_bruto_form = (float)($_POST['lucro_bruto_calculado'] ?? 0);
-    $comissao_usuario_form = (float)($_POST['comissao_usuario_calculada'] ?? 0);
-
-    // Validação básica
-    if (empty($id_usuario) || empty($data_transacao) || empty($hora_transacao)) {
-        log_acao("Erro: Campos de data/hora/usuário ausentes no registro de transação.");
-        header('Location: dashboard_usuario.php?status=error');
-        exit;
+    if (!empty($_POST['data_relatorio'])) {
+        $data_selecionada = $_POST['data_relatorio'];
+        $data_atual = $data_selecionada . ' ' . date('H:i:s'); 
+        $log_tipo_relatorio = ($data_selecionada < $hoje) ? "Retroativo ($data_selecionada)" : "Data Manual ($data_selecionada)";
     }
-    
-    // Combina data e hora
-    $data_completa = $data_transacao . ' ' . $hora_transacao . ':00';
-    
-    // --- LÓGICA PRINCIPAL DE CÁLCULO (Servidor) ---
-    try {
-        // 1. Obter o usuário e seu manager
-        $stmt_user = $pdo->prepare("SELECT id, manager_id, percentual_comissao FROM usuarios WHERE id = ? AND role = 'usuario'");
-        $stmt_user->execute([$id_usuario]);
-        $user_data = $stmt_user->fetch();
 
-        if (!$user_data) {
-            log_acao("Erro de segurança: Tentativa de registrar transação para ID de usuário inválido: " . $id_usuario);
-            header('Location: dashboard_usuario.php?status=error');
+    $lucro = ($saque + $bau) - $deposito;
+
+    // **** MODIFICADO: Busca o usuário DENTRO da organização ****
+    $stmt_user = $pdo->prepare("SELECT nome, percentual_comissao, id_sub_adm FROM usuarios WHERE id_usuario = ? AND org_id = ?");
+    $stmt_user->execute([$usuario_id, $org_id]);
+    $user = $stmt_user->fetch();
+
+    if ($user) {
+        $comissao_usuario = 0;
+        if ($user['percentual_comissao'] > 0) {
+            $comissao_usuario = $lucro * ($user['percentual_comissao'] / 100);
+        }
+        
+        $comissao_sub_adm = 0; 
+        if ($user['id_sub_adm'] != NULL) {
+            $comissao_sub_adm = $lucro - $comissao_usuario; 
+        }
+
+        try {
+            $pdo->beginTransaction();
+
+            // **** MODIFICADO: Adiciona org_id ****
+            $stmt_dep = $pdo->prepare("INSERT INTO transacoes (org_id, id_usuario, tipo_transacao, valor, data) VALUES (?, ?, 'deposito', ?, ?)");
+            $stmt_dep->execute([$org_id, $usuario_id, $deposito, $data_atual]);
+            
+            $stmt_saq = $pdo->prepare("INSERT INTO transacoes (org_id, id_usuario, tipo_transacao, valor, data) VALUES (?, ?, 'saque', ?, ?)");
+            $stmt_saq->execute([$org_id, $usuario_id, $saque, $data_atual]);
+
+            $stmt_bau = $pdo->prepare("INSERT INTO transacoes (org_id, id_usuario, tipo_transacao, valor, data) VALUES (?, ?, 'bau', ?, ?)");
+            $stmt_bau->execute([$org_id, $usuario_id, $bau, $data_atual]);
+
+            // **** MODIFICADO: Adiciona org_id ****
+            $stmt_saldo = $pdo->prepare("UPDATE usuarios SET saldo = saldo + ? WHERE id_usuario = ? AND org_id = ?");
+            $stmt_saldo->execute([$lucro, $usuario_id, $org_id]);
+
+            // **** MODIFICADO: Adiciona org_id ****
+            $stmt_relatorio = $pdo->prepare("
+                INSERT INTO relatorios 
+                (org_id, id_usuario, lucro_diario, comissao_usuario, comissao_sub_adm, valor_deposito, valor_saque, valor_bau, data) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ");
+            $stmt_relatorio->execute([$org_id, $usuario_id, $lucro, $comissao_usuario, $comissao_sub_adm, $deposito, $saque, $bau, $data_atual]);
+
+            $pdo->commit();
+
+            log_action($pdo, 'RELATORIO_ENVIO', "Relatório ($log_tipo_relatorio) enviado para '{$user['nome']}' (ID: $usuario_id). Lucro: $lucro.");
+
+            // Redirecionamento (lógica existente)
+            $redirect_url = 'index.php'; 
+            if (isset($_SESSION['role'])) {
+                if ($_SESSION['role'] == 'super_adm') $redirect_url = 'dashboard_superadmin.php';
+                elseif ($_SESSION['role'] == 'admin') $redirect_url = 'dashboard_admin.php';
+                elseif ($_SESSION['role'] == 'sub_adm') $redirect_url = 'dashboard_subadmin.php';
+                elseif ($_SESSION['role'] == 'usuario') $redirect_url = 'dashboard_usuario.php';
+            }
+            header('Location: ' . $redirect_url . '?status=success');
             exit;
+
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            log_action($pdo, 'ERROR_TRANSACAO', "Falha ao processar transação para ID $usuario_id: " . $e->getMessage());
+            echo "Erro ao registrar transação: " . $e->getMessage();
         }
 
-        $user_rate = (float)$user_data['percentual_comissao'] / 100;
-        $manager_id = $user_data['manager_id'];
-        
-        // 2. Obter a comissão do Manager (Admin ou Sub-Admin)
-        $manager_rate = 0.10; // Taxa padrão para o Manager (10%)
-        $admin_rate = 0.50; // Taxa padrão para o Super Admin (50%)
-        
-        // Lucro bruto (cálculo de integridade)
-        $lucro_bruto_real = ($valor_deposito + $valor_bau) - $valor_saque;
-
-        // Se o lucro for negativo ou zero, as comissões são zero.
-        if ($lucro_bruto_real <= 0) {
-            $comissao_usuario_real = 0.00;
-            $comissao_sub_adm_real = 0.00;
-            $comissao_admin_real = 0.00;
-        } else {
-            // Calcular comissão do Usuário (Operador) - 40%
-            $comissao_usuario_real = $lucro_bruto_real * $user_rate;
-            
-            // O restante do lucro é Lucro Bruto - Comissão do Operador
-            $lucro_restante = $lucro_bruto_real - $comissao_usuario_real;
-            
-            // A comissão do Manager (Admin/Sub-Admin) é 10% do lucro restante
-            $comissao_sub_adm_real = $lucro_restante * $manager_rate;
-            
-            // O lucro do Super Admin é o restante (Lucro Restante - Comissão do Manager)
-            $comissao_admin_real = $lucro_restante - $comissao_sub_adm_real;
-            
-            // Verifica se a taxa do Super Admin é realmente 50% do lucro restante (para fins de integridade)
-            // if (abs($comissao_admin_real - ($lucro_restante * $admin_rate)) > 0.01) {
-            //    // Logar alerta de discrepância ou ajustar a lógica.
-            // }
-
-        }
-
-        // 3. Inserir o relatório na tabela `relatorios`
-        $stmt_insert = $pdo->prepare("
-            INSERT INTO relatorios (
-                id_usuario, 
-                id_sub_adm, 
-                valor_deposito, 
-                valor_saque, 
-                valor_bau, 
-                lucro_diario, 
-                comissao_usuario, 
-                comissao_sub_adm, 
-                comissao_admin,
-                data
-            ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            )
-        ");
-        
-        $stmt_insert->execute([
-            $id_usuario,
-            $manager_id, // manager_id do usuário, que é o ID do Admin/Sub-Admin responsável
-            $valor_deposito,
-            $valor_saque,
-            $valor_bau,
-            $lucro_bruto_real,
-            $comissao_usuario_real,
-            $comissao_sub_adm_real,
-            $comissao_admin_real,
-            $data_completa
-        ]);
-
-        // Registrar a ação
-        log_acao("Transação registrada para o usuário ID " . $id_usuario . ". Lucro Bruto: R$ " . number_format($lucro_bruto_real, 2, ',', '.'));
-
-        // Redireciona com sucesso
-        header('Location: dashboard_usuario.php?status=success');
-        exit;
-
-    } catch (PDOException $e) {
-        log_acao("Erro PDO ao registrar transação: " . $e->getMessage());
-        header('Location: dashboard_usuario.php?status=error');
-        exit;
+    } else {
+        log_action($pdo, 'ERROR_TRANSACAO', "Tentativa de enviar relatório para ID de usuário inválido: $usuario_id (Org: $org_id).");
+        echo "Erro: Usuário não encontrado!";
     }
-
 } else {
-    // Acesso direto, redireciona
-    header('Location: dashboard_usuario.php');
+    $received_user_id = $_POST['usuario_id'] ?? 'N/A';
+    log_action($pdo, 'ERROR_TRANSACAO', "Tentativa de envio de relatório falhou. ID de usuário não fornecido ou vazio (Recebido: $received_user_id).");
+    
+    $redirect_url = 'index.php';
+    if (isset($_SESSION['role'])) {
+        // (lógica de redirecionamento existente)
+        if ($_SESSION['role'] == 'super_adm') $redirect_url = 'dashboard_superadmin.php';
+        elseif ($_SESSION['role'] == 'admin') $redirect_url = 'dashboard_admin.php';
+        elseif ($_SESSION['role'] == 'sub_adm') $redirect_url = 'dashboard_subadmin.php';
+        elseif ($_SESSION['role'] == 'usuario') $redirect_url = 'dashboard_usuario.php';
+    }
+    header('Location: ' . $redirect_url . '?status=error_invalid_input'); 
     exit;
 }
 ?>

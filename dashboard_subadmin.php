@@ -1,320 +1,157 @@
 <?php
 session_start();
 include('config/db.php');
-date_default_timezone_set('America/Sao_Paulo'); 
-include('config/logger.php');
+date_default_timezone_set('America/Sao_Paulo');
 
-$page_title = "Dashboard (Sub Administrador)";
-
-// Verificação de segurança
-if (!isset($_SESSION['role']) || $_SESSION['role'] != 'sub_adm') {
+// **** VERIFICAÇÃO MULTI-TENANT ****
+if (!isset($_SESSION['role']) || $_SESSION['role'] != 'sub_adm' || !isset($_SESSION['org_id'])) {
     header('Location: login.php');
     exit;
 }
-$id_subadmin_logado = $_SESSION['user_id'];
+$id_sub_adm_logado = $_SESSION['id'];
+$org_id = $_SESSION['org_id'];
+// **** FIM DA VERIFICAÇÃO ****
 
-// Mensagem de sucesso/erro
 $message = "";
-if (isset($_GET['status']) && $_GET['status'] == 'success') {
-    $message = "<div class='alert alert-success mt-3'>Transação registrada com sucesso!</div>";
-} elseif (isset($_GET['status']) && $_GET['status'] == 'error') {
-     $message = "<div class='alert alert-danger mt-3'>Erro ao registrar transação.</div>";
+if (isset($_GET['status'])) {
+    if ($_GET['status'] == 'success') $message = "<div class='alert alert-success'>Relatório enviado com sucesso!</div>";
+    elseif ($_GET['status'] == 'error_invalid_input') $message = "<div class='alert alert-danger'>Erro: Verifique os dados.</div>";
 }
 
+// **** MODIFICADO: Busca DENTRO da organização ****
+$stmt_admin_user = $pdo->prepare("SELECT username FROM sub_administradores WHERE id_sub_adm = ? AND org_id = ?"); 
+$stmt_admin_user->execute([$id_sub_adm_logado, $org_id]);
+$admin_user = $stmt_admin_user->fetch();
+$admin_username = $admin_user ? $admin_user['username'] : '';
 
-// --- QUERIES PARA OS CARDS DE ESTATÍSTICAS (KPIs) - Filtrado por gerência ---
+// **** MODIFICADO: Busca DENTRO da organização ****
+$stmt_linked_users = $pdo->prepare("SELECT id_usuario, nome FROM usuarios WHERE id_sub_adm = ? AND org_id = ? ORDER BY nome");
+$stmt_linked_users->execute([$id_sub_adm_logado, $org_id]);
+$linked_users = $stmt_linked_users->fetchAll();
 
-// 1. Total de Operadores (Usuários) sob o Sub-Admin
-$stmt_total_users = $pdo->prepare("SELECT COUNT(*) FROM usuarios WHERE manager_id = ? AND role = 'usuario'");
-$stmt_total_users->execute([$id_subadmin_logado]);
-$total_users = $stmt_total_users->fetchColumn();
-
-// Obter IDs dos operadores gerenciados diretamente
-$user_ids = [];
-$users_query = "SELECT id FROM usuarios WHERE manager_id = ? AND role = 'usuario'";
-$stmt_users = $pdo->prepare($users_query);
-$stmt_users->execute([$id_subadmin_logado]);
-while ($row = $stmt_users->fetch(PDO::FETCH_ASSOC)) {
-    $user_ids[] = $row['id'];
-}
-$user_ids_str = implode(',', array_fill(0, count($user_ids), '?'));
-$user_ids_params = $user_ids;
-
-
-// 2. Lucro Bruto Total (Filtrado pelos operadores gerenciados)
-$total_lucro_bruto = 0;
-if (!empty($user_ids_params)) {
-    $query_lucro = "SELECT SUM(lucro_diario) FROM relatorios WHERE id_usuario IN (" . $user_ids_str . ")";
-    $stmt_lucro = $pdo->prepare($query_lucro);
-    $stmt_lucro->execute($user_ids_params);
-    $total_lucro_bruto = $stmt_lucro->fetchColumn() ?? 0;
-}
-
-// 3. Lucro Líquido do Sub-Admin (Soma de comissao_sub_adm de seus operadores)
-$lucro_liquido_subadmin = 0;
-if (!empty($user_ids_params)) {
-    $query_comissao = "SELECT SUM(comissao_sub_adm) FROM relatorios WHERE id_usuario IN (" . $user_ids_str . ")";
-    $stmt_comissao = $pdo->prepare($query_comissao);
-    $stmt_comissao->execute($user_ids_params);
-    $lucro_liquido_subadmin = $stmt_comissao->fetchColumn() ?? 0;
-}
-
-// 4. Comissão total dos usuários (Operadores)
-$total_comissao_usuarios = 0;
-if (!empty($user_ids_params)) {
-    $query_comissao_user = "SELECT SUM(comissao_usuario) FROM relatorios WHERE id_usuario IN (" . $user_ids_str . ")";
-    $stmt_comissao_user = $pdo->prepare($query_comissao_user);
-    $stmt_comissao_user->execute($user_ids_params);
-    $total_comissao_usuarios = $stmt_comissao_user->fetchColumn() ?? 0;
-}
-
-
-// --- DADOS PARA OS GRÁFICOS (Últimos 7 dias) - Lucro Líquido do Sub-Admin ---
-$data_corte = date('Y-m-d', strtotime('-7 days'));
-$data_subadmin_grafico = [];
-$labels = [];
-
-if (!empty($user_ids)) {
-    $user_ids_in_clause = implode(',', $user_ids);
-    $query_grafico = "
-        SELECT 
-            DATE(data) as dia,
-            SUM(comissao_sub_adm) as lucro_subadmin
-        FROM relatorios 
-        WHERE id_usuario IN ($user_ids_in_clause) AND data >= ?
-        GROUP BY dia
-        ORDER BY dia ASC
-    ";
-    $stmt_grafico = $pdo->prepare($query_grafico);
-    $stmt_grafico->execute([$data_corte]);
-    $dados_grafico_bruto = $stmt_grafico->fetchAll(PDO::FETCH_ASSOC);
-
-    // Preenche os dados para os últimos 7 dias
-    for ($i = 6; $i >= 0; $i--) {
-        $dia = date('Y-m-d', strtotime("-$i days"));
-        $labels[] = date('d/m', strtotime($dia));
-        
-        $found = false;
-        foreach ($dados_grafico_bruto as $d) {
-            if ($d['dia'] == $dia) {
-                $data_subadmin_grafico[] = (float)$d['lucro_subadmin'];
-                $found = true;
-                break;
-            }
-        }
-        if (!$found) {
-            $data_subadmin_grafico[] = 0;
-        }
-    }
-} else {
-     // Preenche com 0 se não houver usuários gerenciados
-     for ($i = 6; $i >= 0; $i--) {
-        $labels[] = date('d/m', strtotime("-$i days"));
-        $data_subadmin_grafico[] = 0;
+// --- Lógica do Filtro de Data e Usuário ---
+$date_start = date('Y-m-d');
+$date_end = date('Y-m-d');
+$selected_user_id = ''; 
+if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['action'] == 'filtrar') {
+    if (!empty($_POST['date_start'])) $date_start = $_POST['date_start'];
+    if (!empty($_POST['date_end'])) $date_end = $_POST['date_end'];
+    if (isset($_POST['user_id_filter']) && !empty($_POST['user_id_filter'])) {
+        $selected_user_id = $_POST['user_id_filter'];
     }
 }
+$date_end_query = $date_end . ' 23:59:59';
 
-$labels_json = json_encode($labels);
-$data_subadmin_grafico_json = json_encode($data_subadmin_grafico);
-
-// --- TABELA DE MELHORES OPERADORES (Top 5) ---
-$ranking_users = [];
-if (!empty($user_ids_params)) {
-    $query_ranking_users = "
-        SELECT 
-            u.nome, 
-            SUM(r.comissao_usuario) AS comissao_total
-        FROM usuarios u
-        JOIN relatorios r ON r.id_usuario = u.id
-        WHERE u.id IN (" . $user_ids_str . ")
-        GROUP BY u.id, u.nome
-        ORDER BY comissao_total DESC
-        LIMIT 5
-    ";
-    $stmt_ranking = $pdo->prepare($query_ranking_users);
-    $stmt_ranking->execute($user_ids_params);
-    $ranking_users = $stmt_ranking->fetchAll(PDO::FETCH_ASSOC);
-}
-
-// --- DADOS DA META MENSAL ---
-$ano_mes_atual = date('Y-m');
-$stmt_meta = $pdo->prepare("SELECT valor_meta FROM metas_mensais WHERE id_admin = ? AND ano_mes = ?");
-$stmt_meta->execute([$id_subadmin_logado, $ano_mes_atual]);
-$meta_atual = $stmt_meta->fetch(PDO::FETCH_ASSOC);
-$valor_meta_atual = $meta_atual ? (float)$meta_atual['valor_meta'] : 0;
-$progresso_percentual = $valor_meta_atual > 0 ? ($lucro_liquido_subadmin / $valor_meta_atual) * 100 : 0;
-
-
-include('header.php'); 
+include('templates/header.php'); 
 ?>
 
-<h2 class="mb-4">Minha Área de Gerência</h2>
-
-<!-- Linha de KPIs e Meta -->
-<div class="row">
-    <!-- Lucro Líquido (Seu) -->
-    <div class="col-md-6 col-lg-4 mb-4">
-        <div class="card bg-success text-white shadow-sm h-100">
-            <div class="card-body">
-                <div class="d-flex align-items-center">
-                    <i class="fas fa-wallet fa-3x me-3"></i>
-                    <div>
-                        <h5 class="card-title text-white">Lucro Líquido (Minha Parte)</h5>
-                        <h1 class="display-6 mb-0">R$ <?php echo number_format($lucro_liquido_subadmin, 2, ',', '.'); ?></h1>
+<div class="container-fluid">
+    <div class="alert alert-info shadow-sm">
+        <strong>Seu link de registro de usuário:</strong><br>
+        <input type="text" class="form-control form-control-sm mt-1" value="<?php echo $site_url; ?>/register_user.php?ref=<?php echo $admin_username; ?>" readonly>
+    </div>
+    <div class="row">
+        <div class="col-lg-5 col-md-12">
+            <h3>Enviar Relatório (Sub-Admin)</h3>
+            <?php echo $message; ?>
+            <div class="card shadow-sm mb-4"><div class="card-body">
+                <form action="process_transaction.php" method="POST">
+                    <div class="mb-3">
+                        <label for="usuario_id" class="form-label">Selecione o Usuário Vinculado</label>
+                        <select class="form-control" name="usuario_id" required>
+                            <option value="">Escolha um usuário...</option>
+                            <?php foreach ($linked_users as $user) echo "<option value='{$user['id_usuario']}'>" . htmlspecialchars($user['nome']) . "</option>"; ?>
+                        </select>
                     </div>
-                </div>
-            </div>
+                    <input type="hidden" name="data_relatorio" value="<?php echo date('Y-m-d'); ?>">
+                    <div class="mb-3"><label for="deposito" class="form-label">DEPÓSITO</label><input type="number" step="0.01" class="form-control" name="deposito" required></div>
+                    <div class="mb-3"><label for="saque" class="form-label">SAQUE</label><input type="number" step="0.01" class="form-control" name="saque" required></div>
+                    <div class="mb-3"><label for="bau" class="form-label">BAÚ (Saldo Final)</label><input type="number" step="0.01" class="form-control" name="bau" required></div>
+                    <button type="submit" class="btn btn-success w-100" <?php echo (empty($linked_users)) ? 'disabled' : ''; ?>>
+                        <?php echo (empty($linked_users)) ? 'Vincule um usuário primeiro' : 'Enviar Relatório'; ?>
+                    </button>
+                </form>
+            </div></div>
         </div>
-    </div>
-
-    <!-- Total Operadores -->
-    <div class="col-md-6 col-lg-4 mb-4">
-        <div class="card bg-info text-white shadow-sm h-100">
-            <div class="card-body">
-                <div class="d-flex align-items-center">
-                    <i class="fas fa-users fa-3x me-3"></i>
-                    <div>
-                        <h5 class="card-title text-white">Operadores sob Minha Gerência</h5>
-                        <h1 class="display-6 mb-0"><?php echo $total_users; ?></h1>
+        <div class="col-lg-7 col-md-12">
+            <h3>Relatórios dos Seus Usuários</h3>
+            <form action="dashboard_subadmin.php" method="POST" class="mb-3 p-3 border rounded bg-light shadow-sm">
+                <input type="hidden" name="action" value="filtrar">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-4"><label for="date_start" class="form-label small mb-1">De:</label><input type="date" class="form-control form-control-sm" name="date_start" value="<?php echo htmlspecialchars($date_start); ?>"></div>
+                    <div class="col-md-4"><label for="date_end" class="form-label small mb-1">Até:</label><input type="date" class="form-control form-control-sm" name="date_end" value="<?php echo htmlspecialchars($date_end); ?>"></div>
+                    <div class="col-md-4"><label for="user_id_filter" class="form-label small mb-1">Filtrar Usuário:</label>
+                         <select name="user_id_filter" id="user_id_filter" class="form-control form-control-sm">
+                            <option value="">Todos os Usuários</option>
+                            <?php foreach ($linked_users as $user): ?>
+                                <option value="<?php echo $user['id_usuario']; ?>" <?php echo ($user['id_usuario'] == $selected_user_id) ? 'selected' : ''; ?>>
+                                    <?php echo htmlspecialchars($user['nome']); ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
                     </div>
+                    <div class="col-12 mt-2"><button type="submit" class="btn btn-primary btn-sm w-100">Filtrar</button></div>
                 </div>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Meta Mensal -->
-    <div class="col-md-12 col-lg-4 mb-4">
-        <div class="card shadow-sm border-l-4 border-l-primary h-100">
-            <div class="card-body">
-                 <div class="d-flex justify-content-between align-items-center">
-                    <h5 class="card-title">Meta Mensal</h5>
-                    <a href="metas.php" class="btn btn-sm btn-outline-primary">Ajustar</a>
-                 </div>
-                 <?php if ($valor_meta_atual > 0): ?>
-                    <h1 class="display-6 mb-2 text-primary">R$ <?php echo number_format($valor_meta_atual, 2, ',', '.'); ?></h1>
-                    <div class="progress" style="height: 1.5rem;">
-                        <div class="progress-bar bg-primary" role="progressbar" 
-                             style="width: <?php echo min($progresso_percentual, 100); ?>%;" 
-                             aria-valuenow="<?php echo $progresso_percentual; ?>" 
-                             aria-valuemin="0" aria-valuemax="100">
-                            <b><?php echo number_format(min($progresso_percentual, 100), 1, ',', '.'); ?>%</b>
-                        </div>
-                    </div>
-                    <small class="text-muted">Progresso: R$ <?php echo number_format($lucro_liquido_subadmin, 2, ',', '.'); ?></small>
-                <?php else: ?>
-                    <h1 class="display-6 mb-2 text-muted">Não Definida</h1>
-                    <p class="text-muted">Defina uma meta em Metas Mensais.</p>
-                <?php endif; ?>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Gráfico de Lucro Líquido e Ranking de Operadores -->
-<div class="row">
-    <!-- Gráfico de Lucro Líquido (Linha) -->
-    <div class="col-lg-8 mb-4">
-        <div class="card shadow-sm h-100">
-            <div class="card-header">
-                <h5 class="mb-0">Minha Comissão Líquida (Últimos 7 dias)</h5>
-            </div>
-            <div class="card-body">
-                <div style="height: 350px;">
-                    <canvas id="subAdminProfitChart"></canvas>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Ranking de Operadores -->
-    <div class="col-lg-4 mb-4">
-        <div class="card shadow-sm h-100">
-            <div class="card-header">
-                <h5 class="mb-0">Top 5 Operadores por Comissão (Total)</h5>
-            </div>
-            <div class="card-body table-responsive">
-                <table class="table table-hover mb-0">
+            </form>
+            <div class="table-responsive">
+                <table class="table table-striped table-bordered table-sm">
                     <thead class="table-dark">
                         <tr>
-                            <th>#</th>
-                            <th>Operador</th>
-                            <th class="text-end">Comissão (R$)</th>
+                            <th>Usuário</th><th>Data</th><th>Depósito</th><th>Saque</th><th>Baú</th>
+                            <th>Lucro Total</th><th>Com. Usuário</th><th>Sua Comissão</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php if (empty($ranking_users)): ?>
-                            <tr><td colspan="3" class="text-center text-muted">Nenhum operador com dados.</td></tr>
-                        <?php endif; ?>
-                        <?php $rank = 1; foreach ($ranking_users as $user): ?>
-                        <tr>
-                            <td><?php echo $rank++; ?></td>
-                            <td><?php echo htmlspecialchars($user['nome']); ?></td>
-                            <td class="text-end">R$ <?php echo number_format($user['comissao_total'], 2, ',', '.'); ?></td>
-                        </tr>
-                        <?php endforeach; ?>
+                        <?php
+                            // **** MODIFICADO: Adiciona AND r.org_id = ? ****
+                            $query_reports = "
+                                SELECT r.*, u.nome AS nome_usuario FROM relatorios r 
+                                JOIN usuarios u ON r.id_usuario = u.id_usuario
+                                WHERE u.id_sub_adm = ? AND r.org_id = ? AND (r.data BETWEEN ? AND ?)
+                            ";
+                            $params_reports = [$id_sub_adm_logado, $org_id, $date_start, $date_end_query];
+                            if (!empty($selected_user_id)) {
+                                $query_reports .= " AND r.id_usuario = ?";
+                                $params_reports[] = $selected_user_id; 
+                            }
+                            $query_reports .= " ORDER BY r.data DESC";
+                            $stmt_reports = $pdo->prepare($query_reports);
+                            $stmt_reports->execute($params_reports); 
+                            $relatorios = $stmt_reports->fetchAll();
+
+                            $total_lucro_geral = 0; $total_comissao_usuario = 0; $total_comissao_admin = 0;
+                            if (count($relatorios) == 0) {
+                                echo "<tr><td colspan='8' class='text-center'>Nenhum relatório encontrado.</td></tr>";
+                            } else {
+                                foreach ($relatorios as $r) {
+                                    $total_lucro_geral += $r['lucro_diario'];
+                                    $total_comissao_usuario += $r['comissao_usuario'];
+                                    $total_comissao_admin += $r['comissao_sub_adm'];
+                                    echo "<tr>
+                                            <td>" . htmlspecialchars($r['nome_usuario']) . "</td>
+                                            <td>" . date('d/m/Y H:i', strtotime($r['data'])) . "</td>
+                                            <td>R$ " . number_format($r['valor_deposito'], 2, ',', '.') . "</td>
+                                            <td>R$ " . number_format($r['valor_saque'], 2, ',', '.') . "</td>
+                                            <td>R$ " . number_format($r['valor_bau'], 2, ',', '.') . "</td>
+                                            <td>R$ " . number_format($r['lucro_diario'], 2, ',', '.') . "</td>
+                                            <td>R$ " . number_format($r['comissao_usuario'], 2, ',', '.') . "</td>
+                                            <td>R$ " . number_format($r['comissao_sub_adm'], 2, ',', '.') . "</td> 
+                                          </tr>";
+                                }
+                            }
+                        ?>
                     </tbody>
+                    <tfoot class="table-group-divider">
+                        <tr>
+                            <td colspan="5" class="text-end"><strong>TOTAIS:</strong></td>
+                            <td class="text-success fw-bold">R$ <?php echo number_format($total_lucro_geral, 2, ',', '.'); ?></td>
+                            <td class="text-success fw-bold">R$ <?php echo number_format($total_comissao_usuario, 2, ',', '.'); ?></td>
+                            <td class="text-success fw-bold">R$ <?php echo number_format($total_comissao_admin, 2, ',', '.'); ?></td>
+                        </tr>
+                    </tfoot>
                 </table>
             </div>
         </div>
     </div>
 </div>
-
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    // Dados injetados do PHP
-    const labels = <?php echo $labels_json; ?>;
-    const dataSubAdminProfit = <?php echo $data_subadmin_grafico_json; ?>;
-
-    // --- Gráfico de Linha (Lucro Sub Admin) ---
-    const ctxLine = document.getElementById('subAdminProfitChart');
-    if (ctxLine) {
-        new Chart(ctxLine, {
-            type: 'line',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: 'Minha Comissão Líquida',
-                    data: dataSubAdminProfit,
-                    borderColor: 'rgba(40, 167, 69, 1)', // Verde escuro para lucro
-                    backgroundColor: 'rgba(40, 167, 69, 0.2)',
-                    fill: true,
-                    tension: 0.2
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        title: {
-                            display: true,
-                            text: 'Valor (R$)'
-                        }
-                    }
-                },
-                plugins: {
-                    tooltip: {
-                         callbacks: {
-                            label: function(context) {
-                                let label = context.dataset.label || '';
-                                if (label) {
-                                    label += ': ';
-                                }
-                                if (context.parsed.y !== null) {
-                                    label += 'R$ ' + context.parsed.y.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-                                }
-                                return label;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    }
-});
-</script>
-
-<?php 
-include('footer.php');
-?>
+<?php include('templates/footer.php'); ?>
